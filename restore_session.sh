@@ -1,70 +1,60 @@
 #!/bin/bash
-# ============================================================
-# ELN Platform — Cloud Shell Session Restore Script
-# Run at the start of EVERY new Cloud Shell session
-# ============================================================
+# ================================================================
+# ELN Platform — Cloud Shell Session Restore
+# Fill in YOUR_PAT_HERE, then:  bash ~/eln-api/restore_session.sh
+# ================================================================
+
+# ---- Paste your GitHub PAT here before running ----------------
+PAT="YOUR_PAT_HERE"
+# ---------------------------------------------------------------
 
 set -e
 
-echo "=== 1. Set subscription ==="
+REPO_URL="https://covvalentadmin:${PAT}@github.com/covvalentadmin/eln-platform.git"
+API_DIR=~/eln-api
+DASH_DIR=~/eln-dashboard
+API_BASE="https://eln-api-covvalent-asfhf0abbvh2bphd.southindia-01.azurewebsites.net"
+
+echo "=== 1. Azure subscription ==="
 az account set --subscription 9e25d11c-3753-4b8c-a575-0bcc44f964d4
 az account show --query "{name:name,id:id}" -o table
 
 echo ""
-echo "=== 2. Create directory structure ==="
-mkdir -p ~/eln-api/routers ~/eln-api/prompts
-mkdir -p ~/eln-dashboard/src ~/eln-dashboard/public
-echo "Directories ready"
+echo "=== 2. Git identity ==="
+git config --global user.email "aqeedat.kaur.sandhu@covvalent.com"
+git config --global user.name "Aqeedat Kaur Sandhu"
+echo "Git identity set"
 
 echo ""
-echo "=== 3. Restore eln-api from live App Service ==="
-# Download live deployment zip via Kudu
-TOKEN=$(az account get-access-token \
-  --resource https://management.azure.com \
-  --query accessToken -o tsv)
-
-HTTP_STATUS=$(curl -s -o ~/eln-api-live.zip -w "%{http_code}" \
-  -H "Authorization: Bearer $TOKEN" \
-  "https://eln-api-covvalent.scm.southindia-01.azurewebsites.net/api/zip/site/wwwroot/")
-
-if [ "$HTTP_STATUS" = "200" ] && [ -s ~/eln-api-live.zip ]; then
-  echo "Kudu zip downloaded (HTTP $HTTP_STATUS)"
-  cd ~/eln-api
-  unzip -o ~/eln-api-live.zip
-  echo "API source restored from live deployment"
+echo "=== 3. Clone / update repo ==="
+if [ -d "$API_DIR/.git" ]; then
+  echo "Repo exists — pulling latest"
+  git -C "$API_DIR" remote set-url origin "$REPO_URL"
+  git -C "$API_DIR" pull
 else
-  echo "WARNING: Kudu zip failed (HTTP $HTTP_STATUS) — upload source files manually"
+  echo "Cloning repo to $API_DIR"
+  git clone "$REPO_URL" "$API_DIR"
 fi
 
 echo ""
-echo "=== 4. Smoke tests ==="
-echo "--- Health ---"
-curl -s https://eln-api-covvalent-asfhf0abbvh2bphd.southindia-01.azurewebsites.net/health
+echo "=== 4. Health check ==="
+curl -sf "$API_BASE/health" && echo "" || echo "WARNING: health check failed"
 
 echo ""
-echo "--- SQL check ---"
-curl -s https://eln-api-covvalent-asfhf0abbvh2bphd.southindia-01.azurewebsites.net/health/sql | python3 -m json.tool | head -20
+echo "=== 5. Dashboard build workspace ==="
+mkdir -p "$DASH_DIR/src" "$DASH_DIR/public"
+cp "$API_DIR/dashboard/AIChatPanel.js"           "$DASH_DIR/src/"
+cp "$API_DIR/dashboard/App.js"                   "$DASH_DIR/src/"
+cp "$API_DIR/dashboard/index.js"                 "$DASH_DIR/src/"
+cp "$API_DIR/dashboard/index.html"               "$DASH_DIR/public/"
+cp "$API_DIR/dashboard/package.json"             "$DASH_DIR/"
+cp "$API_DIR/dashboard/staticwebapp.config.json" "$DASH_DIR/"
+echo "Dashboard files copied from repo"
 
 echo ""
-echo "--- Efficiency endpoint ---"
-curl -s "https://eln-api-covvalent-asfhf0abbvh2bphd.southindia-01.azurewebsites.net/api/dashboard/efficiency" | python3 -m json.tool | head -20
+echo "=== 6. npm install ==="
+cd "$DASH_DIR"
+npm install
 
 echo ""
-echo "--- Agent ---"
-AGENT_TOKEN=$(az account get-access-token --resource https://ai.azure.com --query accessToken -o tsv)
-curl -s "https://aifoundry-eln-covvalent.services.ai.azure.com/api/projects/eln-agent-project/assistants/asst_iujfiErrYF9CfqgyB6BqY4Xn?api-version=2025-05-15-preview" \
-  -H "Authorization: Bearer $AGENT_TOKEN" | python3 -m json.tool | grep -E '"model"|"name"'
-
-echo ""
-echo "=== 5. Deploy commands (use when ready) ==="
-echo ""
-echo "-- Deploy API --"
-echo 'cd ~/eln-api && zip -r ~/eln-api.zip . --exclude "antenv/*" && az webapp deploy --name eln-api-covvalent --resource-group rg-eln-covvalent --src-path ~/eln-api.zip --type zip --async true'
-echo ""
-echo "-- Deploy Dashboard --"
-echo 'cd ~/eln-dashboard && REACT_APP_API_URL=https://eln-api-covvalent-asfhf0abbvh2bphd.southindia-01.azurewebsites.net npm run build'
-echo 'SWA_TOKEN=$(az staticwebapp secrets list --name eln-dashboard-covvalent --query "properties.apiKey" -o tsv)'
-echo 'npx @azure/static-web-apps-cli@1.1.7 deploy ./build --deployment-token "$SWA_TOKEN" --env production'
-
-echo ""
-echo "=== Session restore complete ==="
+echo "Session restored. Run deploy_api.sh or deploy_dashboard.sh to deploy."
