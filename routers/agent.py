@@ -111,6 +111,38 @@ async def dispatch_tool(tool_name: str, tool_args: dict, tool_client: httpx.Asyn
             raw = json.dumps(response.json())
             return truncate_tool_output(raw, "search_literature")
 
+        elif tool_name == "update_project_notes":
+            project_code = tool_args.get("project_code", "")
+            note_text    = tool_args.get("note_text", "")
+            author       = tool_args.get("author", "agent")
+            if not project_code or not note_text:
+                return json.dumps({"error": "update_project_notes requires project_code and note_text"})
+            response = await tool_client.post(
+                f"{API_BASE}/api/ai/notes",
+                json={"project_code": project_code, "note_text": note_text,
+                      "captured_from": "chat", "author": author},
+                timeout=TOOL_CALL_TIMEOUT
+            )
+            response.raise_for_status()
+            data = response.json()
+            return json.dumps({
+                "saved": True,
+                "note_id": data.get("note_id"),
+                "project_code": project_code,
+            })
+
+        elif tool_name == "get_project_notes":
+            project_code = tool_args.get("project_code", "")
+            if not project_code:
+                return json.dumps({"error": "get_project_notes requires project_code"})
+            response = await tool_client.get(
+                f"{API_BASE}/api/ai/notes/{project_code}",
+                timeout=TOOL_CALL_TIMEOUT
+            )
+            response.raise_for_status()
+            raw = json.dumps(response.json())
+            return truncate_tool_output(raw, "get_project_notes")
+
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
