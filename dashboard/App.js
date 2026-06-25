@@ -54,8 +54,8 @@ function Sidebar({ active, onNav, user }) {
     { key: 'projects',    icon: '⬡', label: 'Projects',    sub: 'All campaigns' },
     { key: 'experiments', icon: '⚗', label: 'Experiments', sub: 'Recent ELN entries' },
     { key: 'askai',       icon: '⚗', label: 'Ask AI',        sub: 'Chemistry agent' },
-    { key: 'reports',     icon: '📋', label: 'Reports',       sub: 'Analysis & meeting docs' },
-    { key: 'meeting',     icon: '🎙️', label: 'Meeting Copilot', sub: 'Voice to report' },
+    { key: 'reports',  icon: '⬒', label: 'Reports',         sub: 'Analysis & meeting docs' },
+    { key: 'meeting',  icon: '⏺', label: 'Meeting Copilot', sub: 'Voice to report' },
   ];
   return (
     <div style={{ width: '210px', minHeight: '100vh', background: C.navy, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
@@ -236,21 +236,21 @@ function ProjectsView({ onSelectProject }) {
   const [showGantt, setShowGantt] = useState(false);
   const [sortField, setSortField] = useState('project_code');
   const [sortAsc, setSortAsc]     = useState(true);
-  const [genBusy, setGenBusy]     = useState({});
-  const [toast, setToast]         = useState(null);
+  const [generateReport, setGenerateReport] = useState({});
+  const [toast, setToast]                   = useState(null);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 4000); };
 
-  const generateReport = async (e, projectCode) => {
+  const triggerReport = async (e, projectCode) => {
     e.stopPropagation();
-    setGenBusy(b => ({ ...b, [projectCode]: true }));
+    setGenerateReport(s => ({ ...s, [projectCode]: 'generating' }));
     try {
       await apiFetch('/api/ai/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_code: projectCode, triggered_by: 'manual' }) });
-      showToast(`Report queued for ${projectCode} — check Reports tab`);
+      setGenerateReport(s => ({ ...s, [projectCode]: 'done' }));
+      showToast(`Report generating for ${projectCode}`);
     } catch (err) {
+      setGenerateReport(s => { const n = { ...s }; delete n[projectCode]; return n; });
       showToast(`Error: ${err.message}`);
-    } finally {
-      setGenBusy(b => { const n = { ...b }; delete n[projectCode]; return n; });
     }
   };
 
@@ -331,8 +331,12 @@ function ProjectsView({ onSelectProject }) {
                     </span>
                   </td>
                   <td style={{ padding: '11px 14px' }} onClick={e => e.stopPropagation()}>
-                    <button onClick={e => generateReport(e, p.project_code)} disabled={!!genBusy[p.project_code]} style={{ background: genBusy[p.project_code] ? C.ice : C.navy, color: genBusy[p.project_code] ? C.textDim : C.white, border: 'none', borderRadius: '6px', padding: '5px 12px', fontSize: '11px', fontWeight: 700, cursor: genBusy[p.project_code] ? 'default' : 'pointer', fontFamily: FONT, whiteSpace: 'nowrap' }}>
-                      {genBusy[p.project_code] ? '…' : '+ Report'}
+                    <button
+                      onClick={e => triggerReport(e, p.project_code)}
+                      disabled={generateReport[p.project_code] === 'generating'}
+                      style={{ background: generateReport[p.project_code] === 'done' ? C.ice : C.navy, color: generateReport[p.project_code] === 'done' ? C.blue : C.white, border: 'none', borderRadius: '6px', padding: '5px 12px', fontSize: '11px', fontWeight: 700, cursor: generateReport[p.project_code] === 'generating' ? 'default' : 'pointer', fontFamily: FONT, whiteSpace: 'nowrap' }}
+                    >
+                      {generateReport[p.project_code] === 'generating' ? '…' : generateReport[p.project_code] === 'done' ? '✓ Report' : '⬒ Report'}
                     </button>
                   </td>
                 </tr>
@@ -623,32 +627,54 @@ function ExperimentsView({ onSelectExperiment }) {
 
 // ── Reports view ─────────────────────────────────────────────────────────────
 function ReportsView() {
-  const [reports, setReports]   = useState([]);
-  const [loading, setLoading]   = useState(true);
-  const [filter, setFilter]     = useState('');
-  const [genBusy, setGenBusy]   = useState({});
-  const [toast, setToast]       = useState(null);
+  const [reports, setReports]       = useState([]);
+  const [loading, setLoading]       = useState(true);
+  const [filter, setFilter]         = useState('');
+  const [showGenForm, setShowGenForm] = useState(false);
+  const [genCode, setGenCode]       = useState('');
+  const [genBusy, setGenBusy]       = useState(false);
+  const [toast, setToast]           = useState(null);
 
-  useEffect(() => {
-    apiFetch('/api/ai/reports').then(setReports).catch(() => setReports([])).finally(() => setLoading(false));
-  }, []);
+  const reload = () =>
+    apiFetch('/api/ai/reports')
+      .then(data => setReports(data.reports || []))
+      .catch(() => setReports([]))
+      .finally(() => setLoading(false));
+
+  useEffect(() => { reload(); }, []);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 4000); };
 
-  const generateReport = async (projectCode) => {
-    setGenBusy(b => ({ ...b, [projectCode]: true }));
+  const submitGenerate = async () => {
+    if (!genCode.trim()) return;
+    setGenBusy(true);
     try {
-      await apiFetch('/api/ai/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_code: projectCode, triggered_by: 'manual' }) });
-      showToast(`Report queued for ${projectCode}`);
-      setTimeout(() => apiFetch('/api/ai/reports').then(setReports).catch(() => {}), 3000);
+      await apiFetch('/api/ai/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_code: genCode.trim().toUpperCase(), triggered_by: 'manual' }),
+      });
+      showToast(`Generating report for ${genCode.trim().toUpperCase()}…`);
+      setShowGenForm(false);
+      setGenCode('');
+      setTimeout(reload, 3000);
     } catch (e) {
       showToast(`Error: ${e.message}`);
     } finally {
-      setGenBusy(b => { const n = { ...b }; delete n[projectCode]; return n; });
+      setGenBusy(false);
     }
   };
 
-  const filtered = reports.filter(r => !filter || [r.project_code, r.generated_by, r.report_type].some(v => v?.toLowerCase().includes(filter.toLowerCase())));
+  const STATUS_STYLE = {
+    complete: { background: C.cyan,    color: C.navy   },
+    failed:   { background: C.danger,  color: C.white  },
+    pending:  { background: C.ice,     color: C.textDim },
+  };
+
+  const filtered = reports.filter(r =>
+    !filter ||
+    [r.project_code, r.generated_by, r.topic].some(v => v?.toLowerCase().includes(filter.toLowerCase()))
+  );
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: C.white }}>
@@ -661,46 +687,55 @@ function ReportsView() {
             <h2 style={{ color: C.navy, fontFamily: FONT, fontSize: '22px', fontWeight: 800, margin: 0 }}>Reports</h2>
             <div style={{ color: C.textDim, fontFamily: FONT, fontSize: '13px', marginTop: '4px' }}>{reports.length} reports · analysis & meeting documents</div>
           </div>
-          <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Filter by project, author…" style={{ background: C.ice, border: `1.5px solid ${C.border}`, borderRadius: '6px', padding: '8px 14px', color: C.blue, fontFamily: FONT, fontSize: '13px', width: '240px', outline: 'none' }} />
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Filter by project code" style={{ background: C.ice, border: `1.5px solid ${C.border}`, borderRadius: '6px', padding: '8px 14px', color: C.blue, fontFamily: FONT, fontSize: '13px', width: '200px', outline: 'none' }} />
+            {showGenForm ? (
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <input autoFocus value={genCode} onChange={e => setGenCode(e.target.value.toUpperCase())} onKeyDown={e => e.key === 'Enter' && submitGenerate()} placeholder="Project code…" style={{ background: C.white, border: `1.5px solid ${C.border}`, borderRadius: '6px', padding: '8px 12px', color: C.blue, fontFamily: 'monospace', fontSize: '13px', width: '160px', outline: 'none' }} />
+                <button onClick={submitGenerate} disabled={genBusy || !genCode.trim()} style={{ background: C.navy, border: 'none', color: C.white, borderRadius: '6px', padding: '8px 14px', fontFamily: FONT, fontSize: '12px', fontWeight: 700, cursor: genBusy ? 'default' : 'pointer' }}>{genBusy ? '…' : 'Go'}</button>
+                <button onClick={() => { setShowGenForm(false); setGenCode(''); }} style={{ background: 'transparent', border: `1.5px solid ${C.border}`, color: C.textDim, borderRadius: '6px', padding: '8px 12px', fontFamily: FONT, fontSize: '12px', cursor: 'pointer' }}>✕</button>
+              </div>
+            ) : (
+              <button onClick={() => setShowGenForm(true)} style={{ background: C.navy, border: 'none', color: C.white, borderRadius: '6px', padding: '8px 16px', fontFamily: FONT, fontSize: '13px', fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>⬒ Generate Report</button>
+            )}
+          </div>
         </div>
       </div>
       {loading ? <div style={{ padding: '24px 28px', color: C.textDim, fontFamily: FONT }}>Loading reports…</div> : (
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {filtered.length === 0 ? (
             <div style={{ padding: '32px 28px', color: C.textDim, fontFamily: FONT, fontSize: '14px' }}>
-              No reports yet. Click <strong>+ Report</strong> on any project in the Projects tab.
+              No reports yet. Click <strong>⬒ Generate Report</strong> above or use the <strong>⬒ Report</strong> button on any project row.
             </div>
           ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: FONT, fontSize: '13px' }}>
               <thead>
                 <tr style={{ background: C.navy }}>
-                  {['PROJECT','TYPE','DATE','GENERATED BY','STATUS','DOWNLOAD',''].map(h => (
+                  {['PROJECT', 'TYPE', 'DATE', 'GENERATED BY', 'STATUS', 'DOWNLOAD'].map(h => (
                     <th key={h} style={{ padding: '10px 14px', textAlign: 'left', color: C.white, fontSize: '11px', fontWeight: 700, letterSpacing: '0.6px', position: 'sticky', top: 0 }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((r, i) => (
-                  <tr key={r.report_id} style={{ borderBottom: `1px solid ${C.ice}`, background: i % 2 === 0 ? C.white : C.ice }}>
-                    <td style={{ padding: '11px 14px', color: C.navy, fontWeight: 700, fontFamily: 'monospace', fontSize: '12px' }}>{r.project_code || r.topic || '—'}</td>
-                    <td style={{ padding: '11px 14px', color: C.textDim }}>{r.report_type || (r.topic ? 'Meeting' : 'Project')}</td>
-                    <td style={{ padding: '11px 14px', color: C.textDim, whiteSpace: 'nowrap' }}>{r.generated_date ? r.generated_date.slice(0, 10) : '—'}</td>
-                    <td style={{ padding: '11px 14px', color: C.textDim }}>{r.generated_by || r.author || '—'}</td>
-                    <td style={{ padding: '11px 14px' }}>
-                      <span style={{ background: r.status === 'complete' ? C.navy : r.status === 'failed' ? '#c0392b' : C.ice, color: r.status === 'complete' || r.status === 'failed' ? C.white : C.textDim, borderRadius: '10px', padding: '3px 12px', fontSize: '11px', fontWeight: 700 }}>{r.status || 'pending'}</span>
-                    </td>
-                    <td style={{ padding: '11px 14px' }}>
-                      {r.blob_url && <a href={r.blob_url} target="_blank" rel="noreferrer" style={{ color: C.blue, fontWeight: 600, fontSize: '12px', textDecoration: 'none' }}>↓ Download</a>}
-                    </td>
-                    <td style={{ padding: '11px 14px' }}>
-                      {r.project_code && (
-                        <button onClick={() => generateReport(r.project_code)} disabled={!!genBusy[r.project_code]} style={{ background: genBusy[r.project_code] ? C.ice : 'transparent', border: `1.5px solid ${C.border}`, color: C.blue, borderRadius: '6px', padding: '4px 12px', fontSize: '11px', fontWeight: 600, cursor: genBusy[r.project_code] ? 'default' : 'pointer', fontFamily: FONT }}>
-                          {genBusy[r.project_code] ? '…' : '↻ Regenerate'}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {filtered.map((r, i) => {
+                  const st = STATUS_STYLE[r.status] || STATUS_STYLE.pending;
+                  return (
+                    <tr key={r.report_id} style={{ borderBottom: `1px solid ${C.ice}`, background: i % 2 === 0 ? C.white : C.ice }}>
+                      <td style={{ padding: '11px 14px', color: C.navy, fontWeight: 700, fontFamily: 'monospace', fontSize: '12px' }}>{r.project_code || '—'}</td>
+                      <td style={{ padding: '11px 14px', color: C.textDim }}>{r.topic ? 'Meeting' : 'Analysis'}</td>
+                      <td style={{ padding: '11px 14px', color: C.textDim, whiteSpace: 'nowrap' }}>{r.generated_date ? r.generated_date.slice(0, 10) : '—'}</td>
+                      <td style={{ padding: '11px 14px', color: C.textDim }}>{r.generated_by || r.author || '—'}</td>
+                      <td style={{ padding: '11px 14px' }}>
+                        <span style={{ ...st, borderRadius: '10px', padding: '3px 12px', fontSize: '11px', fontWeight: 700 }}>{r.status || 'pending'}</span>
+                      </td>
+                      <td style={{ padding: '11px 14px' }}>
+                        {r.blob_url && r.status === 'complete'
+                          ? <a href={r.blob_url} target="_blank" rel="noreferrer" style={{ color: C.blue, fontWeight: 600, fontSize: '12px', textDecoration: 'none' }}>↓ Download</a>
+                          : <span style={{ color: C.textSub, fontSize: '12px' }}>—</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -712,45 +747,65 @@ function ReportsView() {
 
 // ── Meeting Copilot view ──────────────────────────────────────────────────────
 function MeetingCopilotView({ user }) {
-  const [recording, setRecording]     = useState(false);
-  const [transcript, setTranscript]   = useState('');
-  const [projectCode, setProjectCode] = useState('');
-  const [audioFile, setAudioFile]     = useState(null);
-  const [generating, setGenerating]   = useState(false);
-  const [result, setResult]           = useState(null);
-  const [error, setError]             = useState(null);
-  const recogRef                      = useRef(null);
+  const [isRecording, setIsRecording]         = useState(false);
+  const [transcript, setTranscript]           = useState('');
+  const [interimTranscript, setInterimTranscript] = useState('');
+  const [projectCode, setProjectCode]         = useState('');
+  const [audioFile, setAudioFile]             = useState(null);
+  const [isGenerating, setIsGenerating]       = useState(false);
+  const [reportUrl, setReportUrl]             = useState(null);
+  const [reportMeta, setReportMeta]           = useState(null);
+  const [error, setError]                     = useState(null);
+  const recogRef                              = useRef(null);
+  const transcriptRef                         = useRef(null);
+
+  // Auto-scroll transcript
+  useEffect(() => {
+    if (transcriptRef.current) transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+  }, [transcript, interimTranscript]);
 
   const startRecording = () => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { setError('Speech recognition requires Chrome or Edge. Upload an audio file instead.'); return; }
+    if (!SR) { setError('Speech recognition not supported in this browser. Use Chrome or Edge.'); return; }
     setError(null);
     const recog = new SR();
     recog.lang = 'en-IN';
-    recog.interimResults = true;
     recog.continuous = true;
-    recog.onresult = (e) => {
-      let finalText = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) finalText += e.results[i][0].transcript + ' ';
+    recog.interimResults = true;
+    recog.onresult = (event) => {
+      let finalText = '', interimText = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) finalText += event.results[i][0].transcript + ' ';
+        else interimText += event.results[i][0].transcript;
       }
       if (finalText) setTranscript(t => t + finalText);
+      setInterimTranscript(interimText);
     };
-    recog.onerror = (e) => { setError(`Mic error: ${e.error}`); setRecording(false); };
-    recog.onend   = () => setRecording(false);
+    recog.onerror  = (e) => { setError(`Mic error: ${e.error}`); setIsRecording(false); };
+    recog.onend    = () => { setIsRecording(false); setInterimTranscript(''); };
     recog.start();
     recogRef.current = recog;
-    setRecording(true);
+    setIsRecording(true);
   };
 
   const stopRecording = () => {
     recogRef.current?.stop();
-    setRecording(false);
+    setIsRecording(false);
+    setInterimTranscript('');
+  };
+
+  const clearAll = () => {
+    stopRecording();
+    setTranscript(''); setInterimTranscript(''); setProjectCode('');
+    setAudioFile(null); setReportUrl(null); setReportMeta(null); setError(null);
   };
 
   const generateReport = async () => {
-    if (!transcript.trim() && !audioFile) { setError('Record or upload audio, or paste a transcript first.'); return; }
-    setGenerating(true); setError(null); setResult(null);
+    if (!transcript.trim() && !audioFile) {
+      setError('Record or upload audio, or paste a transcript first.');
+      return;
+    }
+    setIsGenerating(true); setError(null); setReportUrl(null);
     try {
       let finalTranscript = transcript;
       if (audioFile && !transcript.trim()) {
@@ -765,105 +820,131 @@ function MeetingCopilotView({ user }) {
       const data = await apiFetch('/api/ai/meeting', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transcript: finalTranscript, project_code: projectCode || null, author: user?.userDetails || 'unknown' }),
+        body: JSON.stringify({ transcript: finalTranscript, project_code: projectCode || null, author: user?.userDetails || '' }),
       });
-      setResult(data);
+      setReportUrl(data.blob_url);
+      setReportMeta(data);
     } catch (e) {
       setError(e.message);
     } finally {
-      setGenerating(false);
+      setIsGenerating(false);
     }
   };
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '0 28px 28px', background: C.white }}>
-      <PageHeader title="Meeting Copilot" sub="Voice or transcript → structured R&D meeting report" />
+      <PageHeader title="Meeting Copilot" sub="Speak your R&D meeting — get a chemistry analysis report" />
 
-      <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', maxWidth: '900px' }}>
-        {/* Left — recording + transcript */}
-        <div style={{ flex: 1, minWidth: '320px' }}>
+      <div style={{ display: 'flex', gap: '28px', flexWrap: 'wrap', maxWidth: '960px' }}>
+
+        {/* LEFT — recording + live transcript */}
+        <div style={{ flex: 1, minWidth: '340px' }}>
           {/* Mic button */}
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '14px', marginBottom: '24px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', marginBottom: '22px' }}>
             <button
-              onClick={recording ? stopRecording : startRecording}
+              onClick={isRecording ? stopRecording : startRecording}
               style={{
-                width: '96px', height: '96px', borderRadius: '50%',
-                background: recording ? C.cyan : C.navy,
-                border: `3px solid ${recording ? C.navy : C.cyan}`,
-                color: recording ? C.navy : C.white,
-                fontSize: '32px', cursor: 'pointer',
-                boxShadow: recording ? `0 0 0 8px rgba(157,209,241,0.25)` : '0 4px 18px rgba(0,11,54,0.25)',
+                width: '80px', height: '80px', borderRadius: '50%',
+                background: isRecording ? '#c0392b' : C.navy,
+                border: `3px solid ${isRecording ? '#e74c3c' : C.cyan}`,
+                color: C.white,
+                fontSize: '28px', cursor: 'pointer',
+                boxShadow: isRecording ? '0 0 0 10px rgba(192,57,43,0.2)' : '0 4px 18px rgba(0,11,54,0.25)',
                 transition: 'all 0.2s',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}
-              title={recording ? 'Stop recording' : 'Start recording'}
             >
-              {recording ? '⏹' : '🎙️'}
+              {isRecording ? '⏹' : '⏺'}
             </button>
-            <div style={{ color: recording ? C.cyan : C.textDim, fontFamily: FONT, fontSize: '13px', fontWeight: 600 }}>
-              {recording ? 'Recording… click to stop' : 'Click to record (Chrome/Edge)'}
+            <div style={{ color: isRecording ? '#c0392b' : C.textDim, fontFamily: FONT, fontSize: '12px', fontWeight: 600 }}>
+              {isRecording ? '● Recording — click to stop' : 'Click to record (Chrome/Edge)'}
             </div>
           </div>
 
-          {/* Transcript */}
-          <div style={{ color: C.blue, fontFamily: FONT, fontSize: '11px', fontWeight: 700, letterSpacing: '1px', marginBottom: '6px' }}>TRANSCRIPT</div>
+          {/* Upload audio */}
+          <div style={{ color: C.blue, fontFamily: FONT, fontSize: '11px', fontWeight: 700, letterSpacing: '1px', marginBottom: '6px' }}>OR UPLOAD AUDIO FILE</div>
+          <label style={{ display: 'block', background: C.ice, border: `1.5px dashed ${C.border}`, borderRadius: '6px', padding: '10px 14px', cursor: 'pointer', textAlign: 'center', fontFamily: FONT, fontSize: '12px', color: C.textDim, marginBottom: '18px' }}>
+            <input type="file" accept=".wav,.webm,.mp4,.m4a,.ogg,audio/*" onChange={e => setAudioFile(e.target.files[0])} style={{ display: 'none' }} />
+            {audioFile ? <span style={{ color: C.blue, fontWeight: 600 }}>{audioFile.name}</span> : '📎 .wav  .webm  .mp4  .m4a  .ogg'}
+          </label>
+
+          {/* Live transcript */}
+          <div style={{ color: C.blue, fontFamily: FONT, fontSize: '11px', fontWeight: 700, letterSpacing: '1px', marginBottom: '6px' }}>TRANSCRIPT <span style={{ fontWeight: 400, color: C.textSub }}>({transcript.length} chars)</span></div>
+          <div
+            ref={transcriptRef}
+            style={{ background: C.ice, border: `1.5px solid ${C.border}`, borderRadius: '8px', padding: '12px 14px', minHeight: '200px', maxHeight: '400px', overflowY: 'auto', fontFamily: FONT, fontSize: '13px', lineHeight: '1.7', color: C.blue }}
+          >
+            {transcript && <span style={{ color: C.navy }}>{transcript}</span>}
+            {interimTranscript && <span style={{ color: C.textDim, fontStyle: 'italic' }}>{interimTranscript}</span>}
+            {!transcript && !interimTranscript && (
+              <span style={{ color: C.textSub, fontStyle: 'italic' }}>Transcript appears here as you speak, or paste directly…</span>
+            )}
+          </div>
+          {/* Allow manual edit */}
           <textarea
             value={transcript}
             onChange={e => setTranscript(e.target.value)}
-            placeholder="Spoken text appears here automatically, or paste your transcript…"
-            rows={10}
-            style={{ width: '100%', boxSizing: 'border-box', background: C.ice, border: `1.5px solid ${C.border}`, borderRadius: '8px', padding: '12px 14px', color: C.blue, fontFamily: FONT, fontSize: '13px', lineHeight: '1.6', resize: 'vertical', outline: 'none' }}
+            placeholder="Paste or edit transcript here…"
+            rows={3}
+            style={{ width: '100%', boxSizing: 'border-box', marginTop: '8px', background: C.white, border: `1.5px solid ${C.borderMid}`, borderRadius: '6px', padding: '10px 14px', color: C.blue, fontFamily: FONT, fontSize: '12px', lineHeight: '1.5', resize: 'vertical', outline: 'none' }}
           />
-          <div style={{ color: C.textSub, fontFamily: FONT, fontSize: '11px', marginTop: '4px' }}>{transcript.length} chars</div>
         </div>
 
-        {/* Right — config + generate */}
+        {/* RIGHT — config + generate */}
         <div style={{ width: '240px', flexShrink: 0 }}>
           <div style={{ color: C.blue, fontFamily: FONT, fontSize: '11px', fontWeight: 700, letterSpacing: '1px', marginBottom: '6px' }}>PROJECT CODE (optional)</div>
           <input
             value={projectCode}
             onChange={e => setProjectCode(e.target.value.toUpperCase())}
-            placeholder="e.g. CAS-2024-001"
+            placeholder="e.g. P013E00"
             style={{ width: '100%', boxSizing: 'border-box', background: C.ice, border: `1.5px solid ${C.border}`, borderRadius: '6px', padding: '8px 14px', color: C.blue, fontFamily: 'monospace', fontSize: '13px', outline: 'none', marginBottom: '20px' }}
           />
 
-          <div style={{ color: C.blue, fontFamily: FONT, fontSize: '11px', fontWeight: 700, letterSpacing: '1px', marginBottom: '6px' }}>UPLOAD AUDIO (optional)</div>
-          <label style={{ display: 'block', background: C.ice, border: `1.5px dashed ${C.border}`, borderRadius: '6px', padding: '12px 14px', cursor: 'pointer', textAlign: 'center', fontFamily: FONT, fontSize: '12px', color: C.textDim, marginBottom: '20px' }}>
-            <input type="file" accept=".wav,.webm,.mp4,.m4a,audio/*" onChange={e => setAudioFile(e.target.files[0])} style={{ display: 'none' }} />
-            {audioFile ? <span style={{ color: C.blue, fontWeight: 600 }}>{audioFile.name}</span> : '📎 .wav .webm .mp4 .m4a'}
-          </label>
-
           <button
             onClick={generateReport}
-            disabled={generating || (!transcript.trim() && !audioFile)}
+            disabled={isGenerating || (!transcript.trim() && !audioFile)}
             style={{
-              width: '100%', background: generating ? C.ice : C.navy,
-              border: 'none', color: generating ? C.textDim : C.white,
+              width: '100%', background: isGenerating ? C.ice : C.navy,
+              border: 'none', color: isGenerating ? C.textDim : C.white,
               borderRadius: '8px', padding: '13px', fontFamily: FONT, fontSize: '14px',
-              fontWeight: 700, cursor: generating || (!transcript.trim() && !audioFile) ? 'default' : 'pointer',
-              boxShadow: generating ? 'none' : '0 3px 12px rgba(0,11,54,0.2)',
-              transition: 'all 0.15s',
+              fontWeight: 700, cursor: isGenerating || (!transcript.trim() && !audioFile) ? 'default' : 'pointer',
+              boxShadow: isGenerating ? 'none' : '0 3px 12px rgba(0,11,54,0.2)',
+              transition: 'all 0.15s', marginBottom: '10px',
             }}
           >
-            {generating ? 'Generating…' : '⚗ Generate Report'}
+            {isGenerating ? '⏳ Generating…' : '⚗ Generate Report'}
+          </button>
+
+          <button
+            onClick={clearAll}
+            style={{ width: '100%', background: 'transparent', border: `1.5px solid ${C.border}`, color: C.textDim, borderRadius: '8px', padding: '10px', fontFamily: FONT, fontSize: '13px', fontWeight: 600, cursor: 'pointer', marginBottom: '20px' }}
+          >
+            Clear
           </button>
 
           {error && (
-            <div style={{ marginTop: '14px', background: '#fdf2f2', border: `1.5px solid #e57373`, borderRadius: '6px', padding: '10px 14px', color: C.danger, fontFamily: FONT, fontSize: '12px' }}>{error}</div>
+            <div style={{ background: '#fdf2f2', border: `1.5px solid #e57373`, borderRadius: '6px', padding: '10px 14px', color: C.danger, fontFamily: FONT, fontSize: '12px', marginBottom: '14px' }}>{error}</div>
           )}
 
-          {result && (
-            <div style={{ marginTop: '20px', background: C.ice, border: `1.5px solid ${C.border}`, borderLeft: `4px solid ${C.navy}`, borderRadius: '8px', padding: '14px 16px', fontFamily: FONT }}>
+          {reportUrl && reportMeta && (
+            <div style={{ background: C.ice, border: `1.5px solid ${C.border}`, borderLeft: `4px solid ${C.navy}`, borderRadius: '8px', padding: '14px 16px', fontFamily: FONT, marginBottom: '20px' }}>
               <div style={{ color: C.navy, fontSize: '12px', fontWeight: 700, marginBottom: '8px' }}>Report ready</div>
-              <div style={{ color: C.textDim, fontSize: '11px', marginBottom: '4px' }}>{result.topic}</div>
-              <div style={{ color: C.textDim, fontSize: '11px', marginBottom: '12px' }}>{result.generated_date}</div>
-              {result.blob_url && (
-                <a href={result.blob_url} target="_blank" rel="noreferrer" style={{ display: 'inline-block', background: C.navy, color: C.white, borderRadius: '6px', padding: '8px 16px', fontSize: '12px', fontWeight: 700, textDecoration: 'none' }}>
-                  ↓ Download .docx
-                </a>
-              )}
+              <div style={{ color: C.textDim, fontSize: '11px', marginBottom: '4px' }}>{reportMeta.topic}</div>
+              <div style={{ color: C.textSub, fontSize: '11px', marginBottom: '12px' }}>{reportMeta.generated_date}</div>
+              <a href={reportUrl} target="_blank" rel="noreferrer" style={{ display: 'inline-block', background: C.navy, color: C.white, borderRadius: '6px', padding: '8px 16px', fontSize: '12px', fontWeight: 700, textDecoration: 'none', marginRight: '8px' }}>
+                ↓ Download
+              </a>
+              <a href={reportUrl} target="_blank" rel="noreferrer" style={{ display: 'inline-block', background: 'transparent', border: `1.5px solid ${C.border}`, color: C.blue, borderRadius: '6px', padding: '8px 14px', fontSize: '12px', fontWeight: 600, textDecoration: 'none' }}>
+                View Report
+              </a>
             </div>
           )}
+
+          {/* Instructions */}
+          <div style={{ background: C.ice, border: `1.5px solid ${C.border}`, borderRadius: '8px', padding: '14px 16px', fontFamily: FONT, fontSize: '12px', color: C.blue, lineHeight: '1.7' }}>
+            <div style={{ color: C.navy, fontWeight: 700, marginBottom: '6px', fontSize: '11px', letterSpacing: '0.5px' }}>HOW TO USE</div>
+            Start recording and speak naturally. English, Hindi, or Hinglish all work. Describe the problem, hypotheses, and what experiments you want to run. Stop recording when done, then click Generate Report.
+          </div>
         </div>
       </div>
     </div>
