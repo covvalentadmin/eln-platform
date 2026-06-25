@@ -235,26 +235,25 @@ export default function AIChatPanel({ onClose }) {
     }
   }, [isLoading, threadId]);
 
+  // Direct export — bypasses agent, calls /api/ai/export with parsed intent
   const handleDirectExport = useCallback(async () => {
-    const text = input.trim();
-    const months = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12,
-      january:1,february:2,march:3,april:4,june:6,july:7,august:8,september:9,october:10,november:11,december:12};
-    let fromDate = null;
+    const text = input.trim() || '';
 
-    // Match "1st April", "April 1", "1 April", "April 1st"
-    const d1 = text.match(/(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)/i);
-    const d2 = text.match(/([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?/i);
-    const d3 = text.match(/(\d{4}-\d{2}-\d{2})/);
-    if (d3) {
-      fromDate = d3[1];
-    } else if (d1 && months[(d1[2]||'').toLowerCase().slice(0,3)]) {
-      const mon = months[d1[2].toLowerCase().slice(0,3)];
-      const yr = new Date().getFullYear();
-      fromDate = `${yr}-${String(mon).padStart(2,'0')}-${String(d1[1]).padStart(2,'0')}`;
-    } else if (d2 && months[(d2[1]||'').toLowerCase().slice(0,3)]) {
-      const mon = months[d2[1].toLowerCase().slice(0,3)];
-      const yr = new Date().getFullYear();
-      fromDate = `${yr}-${String(mon).padStart(2,'0')}-${String(d2[2]).padStart(2,'0')}`;
+    // Date regex runs first — prevents day-of-month digits being captured as days=N
+    const MONTHS = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12 };
+    const MONTH_PAT = 'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?';
+    let fromDate = null;
+    const isoMatch = text.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+    const dmy = text.match(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_PAT})\\b`, 'i'));
+    const mdy = text.match(new RegExp(`\\b(${MONTH_PAT})\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`, 'i'));
+    if (isoMatch) {
+      fromDate = isoMatch[1];
+    } else if (dmy) {
+      const month = MONTHS[dmy[2].slice(0,3).toLowerCase()];
+      if (month) fromDate = `${new Date().getFullYear()}-${String(month).padStart(2,'0')}-${String(parseInt(dmy[1])).padStart(2,'0')}`;
+    } else if (mdy) {
+      const month = MONTHS[mdy[1].slice(0,3).toLowerCase()];
+      if (month) fromDate = `${new Date().getFullYear()}-${String(month).padStart(2,'0')}-${String(parseInt(mdy[2])).padStart(2,'0')}`;
     }
 
     const daysMatch = text.match(/(\d+)\s*day/i);
@@ -341,12 +340,17 @@ export default function AIChatPanel({ onClose }) {
             style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: C.blue, fontSize: '13px', resize: 'none', lineHeight: '1.5', maxHeight: '80px', overflowY: 'auto', fontFamily: FONT, opacity: isLoading ? 0.5 : 1 }}
           />
           <button
+            onClick={handleDirectExport}
+            title="Export as CSV (bypasses AI — downloads full dataset)"
+            style={{ background: 'transparent', border: `1.5px solid ${C.cyan}`, borderRadius: '6px', color: C.textDim, width: '34px', height: '34px', cursor: 'pointer', fontSize: '13px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontFamily: FONT }}
+          >↓</button>
+          <button
             onClick={() => sendMessage(input)}
             disabled={!input.trim() || isLoading}
             style={{ background: input.trim() && !isLoading ? C.navy : C.ice, border: `1.5px solid ${input.trim() && !isLoading ? C.navy : C.cyan}`, borderRadius: '6px', color: input.trim() && !isLoading ? C.white : C.textSub, width: '34px', height: '34px', cursor: input.trim() && !isLoading ? 'pointer' : 'default', fontSize: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.15s', fontFamily: FONT }}
           >↑</button>
         </div>
-        <div style={{ color: C.textSub, fontSize: '11px', marginTop: '6px', textAlign: 'center', fontFamily: FONT }}>↑ Ask AI  ·  ↓ CSV exports full dataset directly</div>
+        <div style={{ color: C.textSub, fontSize: '11px', marginTop: '6px', textAlign: 'center', fontFamily: FONT }}>↑ Ask AI · ↓ CSV downloads full dataset directly</div>
       </div>
     </div>
   );
