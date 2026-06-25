@@ -8,3 +8,4 @@ azure-identity==1.16.0
 azure-storage-blob==12.20.0
 aiohttp
 python-docx==1.1.2
+azure-cognitiveservices-speech==1.38.0
