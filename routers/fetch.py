@@ -111,6 +111,7 @@ class FetchRequest(BaseModel):
     # Pagination
     limit:           Optional[int] = 50
     offset:          Optional[int] = 0
+    authors_only:    Optional[bool] = False  # return deduplicated author list with last activity
 
 
 @router.post("/api/ai/fetch")
@@ -178,6 +179,37 @@ def fetch(req: FetchRequest):
             conn.close()
             return {"type": "project", "project": project,
                     "experiments": experiments, "count": len(experiments)}
+
+        # ── Mode 3b: Authors summary (days + authors_only) ──────────────────
+        if req.days and req.authors_only:
+            where_clauses = ["e.created_date >= DATEADD(day, ?, GETDATE())"]
+            params = [-req.days]
+            if req.project_code:
+                where_clauses.append("p.project_code = ?")
+                params.append(req.project_code)
+            where = "WHERE " + " AND ".join(where_clauses)
+            cur.execute(f"""
+                SELECT
+                    e.author,
+                    COUNT(*) AS experiment_count,
+                    MAX(e.created_date) AS last_activity,
+                    MIN(e.created_date) AS first_activity
+                FROM eln_experiments e
+                JOIN eln_project_teams pt ON e.project_team_id = pt.project_team_id
+                JOIN eln_projects p ON pt.project_id = p.project_id
+                {where}
+                GROUP BY e.author
+                ORDER BY last_activity DESC
+            """, params)
+            authors = clean(rows_to_dicts(cur))
+            conn.close()
+            return {
+                "type": "authors_summary",
+                "days": req.days,
+                "project_code": req.project_code,
+                "author_count": len(authors),
+                "authors": authors
+            }
 
         # ── Mode 4: Date-range filter ─────────────────────────────────────────
         if req.days and not req.chemistry:
