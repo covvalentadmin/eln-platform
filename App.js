@@ -606,14 +606,15 @@ export default function App() {
   useEffect(() => { if (authChecked && !user) window.location.href = '/.auth/login/aad'; }, [authChecked, user]);
 
   const handleNav = useCallback((key) => {
-    if (key === 'askai') { setShowChat(true); return; }
+    if (key === 'askai') { setShowChat(prev => !prev); return; }
+    setShowChat(false);
     setView(key); setSelectedProject(null); setSelectedExperiment(null);
   }, []);
 
   if (!authChecked) return <div style={{ background: C.white, minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.blue, fontFamily: FONT, fontSize: '14px' }}>Authenticating…</div>;
   if (!user) return null;
 
-  const activeNavKey = view === 'project_experiments' ? 'projects' : view;
+  const activeNavKey = showChat ? 'askai' : (view === 'project_experiments' ? 'projects' : view);
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: C.white, fontFamily: FONT }}>

@@ -111,7 +111,6 @@ class FetchRequest(BaseModel):
     # Pagination
     limit:           Optional[int] = 50
     offset:          Optional[int] = 0
-    authors_only:    Optional[bool] = False  # return deduplicated author list with last activity
 
 
 @router.post("/api/ai/fetch")
@@ -179,37 +178,6 @@ def fetch(req: FetchRequest):
             conn.close()
             return {"type": "project", "project": project,
                     "experiments": experiments, "count": len(experiments)}
-
-        # ── Mode 3b: Authors summary (days + authors_only) ──────────────────
-        if req.days and req.authors_only:
-            where_clauses = ["e.created_date >= DATEADD(day, ?, GETDATE())"]
-            params = [-req.days]
-            if req.project_code:
-                where_clauses.append("p.project_code = ?")
-                params.append(req.project_code)
-            where = "WHERE " + " AND ".join(where_clauses)
-            cur.execute(f"""
-                SELECT
-                    e.author,
-                    COUNT(*) AS experiment_count,
-                    MAX(e.created_date) AS last_activity,
-                    MIN(e.created_date) AS first_activity
-                FROM eln_experiments e
-                JOIN eln_project_teams pt ON e.project_team_id = pt.project_team_id
-                JOIN eln_projects p ON pt.project_id = p.project_id
-                {where}
-                GROUP BY e.author
-                ORDER BY last_activity DESC
-            """, params)
-            authors = clean(rows_to_dicts(cur))
-            conn.close()
-            return {
-                "type": "authors_summary",
-                "days": req.days,
-                "project_code": req.project_code,
-                "author_count": len(authors),
-                "authors": authors
-            }
 
         # ── Mode 4: Date-range filter ─────────────────────────────────────────
         if req.days and not req.chemistry:
@@ -425,5 +393,100 @@ def fetch(req: FetchRequest):
 
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(500, detail=str(e))
+
+
+# ── Direct CSV export endpoint ────────────────────────────────────────────────
+from fastapi.responses import StreamingResponse
+import csv, io
+
+class ExportRequest(BaseModel):
+    days:         Optional[int]  = None
+    from_date:    Optional[str]  = None   # ISO date string e.g. "2026-04-01"
+    to_date:      Optional[str]  = None   # ISO date string e.g. "2026-06-30"
+    project_code: Optional[str]  = None
+    author:       Optional[str]  = None
+    cas_number:   Optional[str]  = None
+
+@router.post("/api/ai/export")
+def export_csv(req: ExportRequest):
+    """Direct CSV export — bypasses agent, returns full untruncated dataset."""
+    try:
+        conn = get_conn()
+        cur  = conn.cursor()
+
+        where_clauses = []
+        params = []
+
+        if req.from_date:
+            where_clauses.append("e.created_date >= ?")
+            params.append(req.from_date)
+        if req.to_date:
+            where_clauses.append("e.created_date <= ?")
+            params.append(req.to_date + " 23:59:59")
+        if req.days and not req.from_date:
+            where_clauses.append("e.created_date >= DATEADD(day, ?, GETDATE())")
+            params.append(-req.days)
+        if req.project_code:
+            where_clauses.append("p.project_code = ?")
+            params.append(req.project_code)
+        if req.author:
+            where_clauses.append("e.author LIKE ?")
+            params.append(f"%{req.author}%")
+        if req.cas_number:
+            where_clauses.append("p.cas_number = ?")
+            params.append(req.cas_number)
+
+        where = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+        cur.execute(f"""
+            SELECT
+                e.exp_number_full,
+                CONVERT(VARCHAR(19), e.created_date, 120) AS created_date,
+                e.author,
+                p.project_code,
+                p.title AS project_title,
+                p.generic_name,
+                p.cas_number,
+                e.title AS experiment_title,
+                e.objective,
+                e.conclusion,
+                CASE e.experiment_status
+                    WHEN 1 THEN 'In Progress'
+                    WHEN 2 THEN 'Submitted'
+                    WHEN 3 THEN 'Approved'
+                    WHEN 4 THEN 'Rejected'
+                    WHEN 5 THEN 'Closed'
+                    WHEN 6 THEN 'Archived'
+                    ELSE CAST(e.experiment_status AS VARCHAR)
+                END AS experiment_status
+            FROM eln_experiments e
+            JOIN eln_project_teams pt ON e.project_team_id = pt.project_team_id
+            JOIN eln_projects p ON pt.project_id = p.project_id
+            {where}
+            ORDER BY e.created_date DESC
+        """, params)
+
+        rows = cur.fetchall()
+        cols = [c[0] for c in cur.description]
+        conn.close()
+
+        # Stream as CSV
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(cols)
+        for row in rows:
+            writer.writerow(['' if v is None else v for v in row])
+
+        output.seek(0)
+        filename = f"eln-export-{req.days or 'all'}d.csv"
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}",
+                     "Access-Control-Expose-Headers": "Content-Disposition"}
+        )
+
     except Exception as e:
         raise HTTPException(500, detail=str(e))

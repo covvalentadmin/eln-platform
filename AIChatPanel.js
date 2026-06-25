@@ -11,7 +11,7 @@ const API_BASE = process.env.REACT_APP_API_URL ||
 const FONT = "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 const C = {
   navy: '#000B36', blue: '#0E2673', cyan: '#9DD1F1', ice: '#DEEBF7',
-  white: '#FFFFFF', textDim: '#4a6194', textSub: '#6b82b8',
+  white: '#FFFFFF', textDim: '#4a6194', textSub: '#6b82b8', border: '#9DD1F1', border: '#9DD1F1',
 };
 
 // ── CSV export ────────────────────────────────────────────────────────────────
@@ -30,6 +30,23 @@ function downloadCSV(content, filename) {
   const a    = document.createElement('a');
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
+}
+
+function extractCSVFromCodeBlock(text) {
+  const match = text.match(/```csv\n([\s\S]+?)```/);
+  return match ? match[1].trim() : null;
+}
+
+function hasDownloadableContent(text) {
+  return /\|.+\|.+\|\n\|[-| ]+\|/.test(text) || /```csv/.test(text);
+}
+
+function getCSVContent(text) {
+  // Try CSV code block first
+  const codeBlock = extractCSVFromCodeBlock(text);
+  if (codeBlock) return codeBlock;
+  // Fall back to markdown table
+  return markdownTableToCSV(text);
 }
 
 function hasMarkdownTable(text) {
@@ -121,8 +138,8 @@ function MessageBubble({ msg, onRetry }) {
   }
 
   const rendered = renderMarkdown(msg.content);
-  const hasTable = hasMarkdownTable(msg.content);
-  const csvData  = hasTable ? markdownTableToCSV(msg.content) : null;
+  const hasTable = hasDownloadableContent(msg.content);
+  const csvData  = hasTable ? getCSVContent(msg.content) : null;
 
   return (
     <div style={{ marginBottom: '18px' }}>
@@ -200,8 +217,8 @@ export default function AIChatPanel({ onClose }) {
       if (data.thread_id && !threadId) setThreadId(data.thread_id);
 
       const wantsCSV = /csv|excel|download|export/i.test(userText);
-      if (wantsCSV && hasMarkdownTable(data.answer)) {
-        const csv = markdownTableToCSV(data.answer);
+      if (wantsCSV && hasDownloadableContent(data.answer)) {
+        const csv = getCSVContent(data.answer);
         if (csv) downloadCSV(csv, `eln-export-${Date.now()}.csv`);
       }
 
@@ -217,6 +234,56 @@ export default function AIChatPanel({ onClose }) {
       setTimeout(() => inputRef.current?.focus(), 100);
     }
   }, [isLoading, threadId]);
+
+  const handleDirectExport = useCallback(async () => {
+    const text = input.trim();
+    const months = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12,
+      january:1,february:2,march:3,april:4,june:6,july:7,august:8,september:9,october:10,november:11,december:12};
+    let fromDate = null;
+
+    // Match "1st April", "April 1", "1 April", "April 1st"
+    const d1 = text.match(/(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)/i);
+    const d2 = text.match(/([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?/i);
+    const d3 = text.match(/(\d{4}-\d{2}-\d{2})/);
+    if (d3) {
+      fromDate = d3[1];
+    } else if (d1 && months[(d1[2]||'').toLowerCase().slice(0,3)]) {
+      const mon = months[d1[2].toLowerCase().slice(0,3)];
+      const yr = new Date().getFullYear();
+      fromDate = `${yr}-${String(mon).padStart(2,'0')}-${String(d1[1]).padStart(2,'0')}`;
+    } else if (d2 && months[(d2[1]||'').toLowerCase().slice(0,3)]) {
+      const mon = months[d2[1].toLowerCase().slice(0,3)];
+      const yr = new Date().getFullYear();
+      fromDate = `${yr}-${String(mon).padStart(2,'0')}-${String(d2[2]).padStart(2,'0')}`;
+    }
+
+    const daysMatch = text.match(/(\d+)\s*day/i);
+    const projectMatch = text.match(/\b([A-Z][0-9]{3}[A-Z][0-9]{2})\b/i);
+    const authorMatch = text.match(/author[:\s]+([\w_]+)/i);
+
+    const body = {};
+    if (fromDate) body.from_date = fromDate;
+    else body.days = daysMatch ? parseInt(daysMatch[1]) : 90;
+    if (projectMatch) body.project_code = projectMatch[1].toUpperCase();
+    if (authorMatch) body.author = authorMatch[1];
+
+    const label = fromDate ? `from-${fromDate}` : `${body.days}d`;
+    try {
+      const res = await fetch(`${API_BASE}/api/ai/export`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) { alert('Export failed: ' + await res.text()); return; }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `eln-export-${label}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { alert('Export error: ' + e.message); }
+  }, [input]);
 
   const handleNewSession = () => {
     if (isLoading) { abortRef.current?.abort(); setIsLoading(false); }
@@ -279,7 +346,7 @@ export default function AIChatPanel({ onClose }) {
             style={{ background: input.trim() && !isLoading ? C.navy : C.ice, border: `1.5px solid ${input.trim() && !isLoading ? C.navy : C.cyan}`, borderRadius: '6px', color: input.trim() && !isLoading ? C.white : C.textSub, width: '34px', height: '34px', cursor: input.trim() && !isLoading ? 'pointer' : 'default', fontSize: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.15s', fontFamily: FONT }}
           >↑</button>
         </div>
-        <div style={{ color: C.textSub, fontSize: '11px', marginTop: '6px', textAlign: 'center', fontFamily: FONT }}>Enter to send · Shift+Enter for new line</div>
+        <div style={{ color: C.textSub, fontSize: '11px', marginTop: '6px', textAlign: 'center', fontFamily: FONT }}>↑ Ask AI  ·  ↓ CSV exports full dataset directly</div>
       </div>
     </div>
   );
