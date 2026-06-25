@@ -1,13 +1,14 @@
 """
 scripts/update_agent_tools.py — AIE-404
 Adds update_project_notes and get_project_notes tools to the Foundry agent
-and appends the PROJECT NOTES section to the agent system prompt.
+and appends the PROJECT MEMORY section to the agent system prompt.
 
 Usage (Azure Cloud Shell):
     cd ~/eln-api
     python scripts/update_agent_tools.py
 
-Requires env vars: FOUNDRY_ENDPOINT, FOUNDRY_API_VERSION, AGENT_ID
+Requires env vars (or falls back to hardcoded defaults):
+    FOUNDRY_ENDPOINT, FOUNDRY_API_VERSION, AGENT_ID
 Azure CLI must be logged in (az login / managed identity).
 """
 
@@ -18,9 +19,12 @@ import urllib.request
 import urllib.error
 import subprocess
 
-FOUNDRY_ENDPOINT = os.environ["FOUNDRY_ENDPOINT"]
-FOUNDRY_API_VER  = os.environ.get("FOUNDRY_API_VERSION", "2025-05-15-preview")
-AGENT_ID         = os.environ["AGENT_ID"]
+FOUNDRY_ENDPOINT = os.environ.get(
+    "FOUNDRY_ENDPOINT",
+    "https://aifoundry-eln-covvalent.services.ai.azure.com/api/projects/eln-agent-project"
+)
+FOUNDRY_API_VER = os.environ.get("FOUNDRY_API_VERSION", "2025-05-15-preview")
+AGENT_ID        = os.environ.get("AGENT_ID", "asst_iujfiErrYF9CfqgyB6BqY4Xn")
 
 NEW_TOOLS = [
     {
@@ -28,29 +32,27 @@ NEW_TOOLS = [
         "function": {
             "name": "update_project_notes",
             "description": (
-                "Save a context note about a project that is NOT in the ELN database. "
-                "Use when the user shares background information, external context, "
-                "vendor details, IP considerations, timelines, or any insight that "
-                "helps understand a project. Notes are visible to all @covvalent.com users."
+                "Save a project insight or decision to persistent memory. "
+                "Call when user shares context not in ELN: final process decisions, "
+                "abandoned routes, key learnings, next step plans."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "project_code": {
-                        "type": "string",
-                        "description": "Project code (e.g. CAS-2024-001)"
+                        "type": "string"
                     },
                     "note_text": {
                         "type": "string",
-                        "description": "The context or insight to save (plain English, up to 4000 chars)"
+                        "description": "The insight to capture, written as a clear factual statement"
                     },
                     "author": {
-                        "type": "string",
-                        "description": "Username of the person who shared the context"
+                        "type": "string"
                     }
                 },
-                "required": ["project_code", "note_text"]
-            }
+                "required": ["project_code", "note_text", "author"]
+            },
+            "strict": False
         }
     },
     {
@@ -58,35 +60,42 @@ NEW_TOOLS = [
         "function": {
             "name": "get_project_notes",
             "description": (
-                "Retrieve saved context notes for a project. "
-                "Always call this before answering questions about a project — "
-                "notes may contain crucial context not in the ELN database."
+                "Retrieve all saved project notes and context for a project. "
+                "Call at the start of any project query to check for captured insights."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "project_code": {
-                        "type": "string",
-                        "description": "Project code to retrieve notes for"
+                        "type": "string"
                     }
                 },
                 "required": ["project_code"]
-            }
+            },
+            "strict": False
         }
     }
 ]
 
-NOTES_SYSTEM_PROMPT_ADDITION = """
-## PROJECT NOTES — MEMORY CAPTURE
+SYSTEM_PROMPT_ADDITION = """
 
-When a user shares context about a project that is NOT in the ELN database (e.g. vendor conversations, IP constraints, timeline pressures, external synthesis info, regulatory context), call update_project_notes immediately to save it. Do not ask — just save and confirm.
+## PROJECT MEMORY — CAPTURED INSIGHTS
 
-Always call get_project_notes first when the user asks about a specific project. Notes may contain crucial context that changes your analysis.
+When a user shares context about a project that is NOT in the ELN experiment records — such as:
+- "these experiments constitute the final process"
+- "we decided to abandon X route"
+- "for next steps we are considering Y chemistry"
+- "the key insight from this campaign was Z"
+- "this project is on hold because..."
 
-Format confirmation: "Noted for [PROJECT_CODE]: [one-line summary of what was saved]."
+You MUST:
+1. Confirm: "I'll capture this as a project note for [project_code]: [one-line paraphrase of what you understood]"
+2. Call update_project_notes with {project_code, note_text: the insight as a clear statement, author: user login or "unknown"}
+3. Confirm: "Saved to [project_code] project memory. This will appear in all future reports and queries."
 
-Notes are visible to all @covvalent.com users — do not save anything marked personal or confidential by the user.
-"""
+When answering ANY query about a specific project, ALWAYS call get_project_notes({project_code}) first to check for captured context. Incorporate any notes into your response naturally — cite them as "Project notes:" before the note content.
+
+Notes are visible to all Covvalent users. Treat them as authoritative project context."""
 
 
 def get_token() -> str:
@@ -104,15 +113,15 @@ def get_token() -> str:
         sys.exit(1)
 
 
-def foundry_request(method: str, path: str, body: dict | None = None) -> dict:
-    url = f"{FOUNDRY_ENDPOINT}/{path}?api-version={FOUNDRY_API_VER}"
+def foundry_request(method: str, path: str, body=None) -> dict:
+    url   = f"{FOUNDRY_ENDPOINT}/{path}?api-version={FOUNDRY_API_VER}"
     token = get_token()
-    data = json.dumps(body).encode() if body else None
-    req = urllib.request.Request(
+    data  = json.dumps(body).encode() if body else None
+    req   = urllib.request.Request(
         url, data=data, method=method,
         headers={
             "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
+            "Content-Type":  "application/json",
         }
     )
     try:
@@ -139,32 +148,45 @@ def main():
     for tool in NEW_TOOLS:
         name = tool["function"]["name"]
         if name in existing_names:
-            print(f"  Tool already registered: {name} (skip)")
+            print(f"  Replacing existing tool: {name}")
+            existing_tools = [t for t in existing_tools
+                              if not (t.get("type") == "function" and
+                                      t.get("function", {}).get("name") == name)]
         else:
-            existing_tools.append(tool)
-            added.append(name)
+            print(f"  Adding new tool: {name}")
+        existing_tools.append(tool)
+        added.append(name)
 
     current_prompt = agent.get("instructions", "")
-    if "PROJECT NOTES" in current_prompt:
-        print("  System prompt already contains PROJECT NOTES section (skip)")
-        new_prompt = current_prompt
-    else:
-        new_prompt = current_prompt + NOTES_SYSTEM_PROMPT_ADDITION
-        print("  Appending PROJECT NOTES section to system prompt")
+    if "PROJECT MEMORY" in current_prompt:
+        print("  System prompt already contains PROJECT MEMORY section — replacing …")
+        # Remove old section (from ## PROJECT MEMORY to end or next ##)
+        current_prompt = re.sub(
+            r"\n## PROJECT MEMORY.*",
+            "",
+            current_prompt,
+            flags=re.DOTALL
+        )
+    new_prompt = current_prompt + SYSTEM_PROMPT_ADDITION
+    print("  Appending PROJECT MEMORY section to system prompt")
 
-    if not added and new_prompt == current_prompt:
-        print("Agent is already up to date. Nothing to patch.")
-        return
-
-    print(f"  Adding tools: {added}")
+    print(f"  Tools to register: {added}")
     print("Patching agent …")
     updated = foundry_request("POST", f"assistants/{AGENT_ID}", {
         "tools":        existing_tools,
         "instructions": new_prompt,
         "model":        agent.get("model", "gpt-5-4"),
     })
-    print(f"Done. Agent tools: {[t['function']['name'] for t in updated.get('tools', []) if t.get('type') == 'function']}")
 
+    registered = [
+        t["function"]["name"]
+        for t in updated.get("tools", [])
+        if t.get("type") == "function"
+    ]
+    print(f"Done. Registered tools: {registered}")
+
+
+import re
 
 if __name__ == "__main__":
     main()
