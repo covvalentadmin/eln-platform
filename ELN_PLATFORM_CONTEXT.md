@@ -1,6 +1,6 @@
 # Covvalent ELN Intelligence Platform — Full Context
 > **For Claude Code:** Read this file at the start of every session before making any changes.
-> Last updated: 24 June 2026
+> Last updated: 25 June 2026
 
 ---
 
@@ -56,6 +56,38 @@ az account set --subscription b10caf33-c875-4c96-9d7d-1b211acd0ac4  # ELL-VM
 
 ---
 
+## GitHub Repository
+
+**URL:** https://github.com/covvalentadmin/eln-platform (private, covvalentadmin account)
+
+**Structure:**
+```
+eln-platform/
+├── main.py, requirements.txt, startup.sh   ← Python backend (root)
+├── routers/                                ← FastAPI routers
+├── dashboard/                              ← React source files
+│   ├── AIChatPanel.js
+│   ├── App.js
+│   ├── index.js
+│   ├── index.html
+│   ├── package.json
+│   └── staticwebapp.config.json
+├── restore_session.sh   ← Full Cloud Shell restore (clone/pull + workspace setup)
+├── deploy_api.sh        ← zip + az webapp deploy
+└── deploy_dashboard.sh  ← npm run build + npx swa deploy
+```
+
+**Cloud Shell workflow (new session):**
+```bash
+# 1. Edit PAT at top of file, then:
+bash ~/eln-api/restore_session.sh
+# 2. Deploy when ready:
+bash ~/eln-api/deploy_api.sh
+bash ~/eln-api/deploy_dashboard.sh
+```
+
+---
+
 ## Architecture
 
 ```
@@ -69,6 +101,7 @@ FastAPI v2.3.0 (App Service B1, South India)
     ├── GET  /api/dashboard/efficiency   ← 3-period snapshots from SQL
     ├── GET  /api/search                 ← hybrid BM25+vector+semantic (AI Search)
     ├── POST /api/ai/fetch               ← structured SQL retrieval (Tool 1)
+    ├── POST /api/ai/export              ← direct CSV export, bypasses agent
     ├── POST /api/ai/chat                ← agent tool-call loop (gpt-5.4)
     └── GET  /api/ai/literature          ← PubChem + CrossRef (Tool 3)
         ↓ VNet integration
@@ -84,29 +117,39 @@ AI Foundry (South India)
 
 ## Source File Structure
 
+**On-disk (OneDrive, working copy):**
 ```
 ELN Intelligence Platform/
 ├── ELN_PLATFORM_CONTEXT.md        ← this file
-├── eln-api/                        ← FastAPI backend
-│   ├── main.py                     ← all REST endpoints
-│   ├── requirements.txt
-│   ├── startup.sh
-│   ├── .ostype                     ← LINUX
-│   └── routers/
-│       ├── __init__.py
-│       ├── agent.py                ← POST /api/ai/chat
-│       ├── fetch.py                ← POST /api/ai/fetch (Tool 1)
-│       ├── search.py               ← GET /api/search (Tool 2)
-│       └── literature.py           ← GET /api/ai/literature (Tool 3)
-└── eln-dashboard/                  ← React frontend
+├── main.py                         ← all REST endpoints
+├── requirements.txt
+├── startup.sh
+├── restore_session.sh              ← Cloud Shell full restore
+├── deploy_api.sh                   ← zip + az webapp deploy
+├── deploy_dashboard.sh             ← npm build + swa deploy
+├── routers/
+│   ├── __init__.py
+│   ├── agent.py                    ← POST /api/ai/chat
+│   ├── fetch.py                    ← POST /api/ai/fetch + /api/ai/export
+│   ├── search.py                   ← GET /api/search (Tool 2)
+│   └── literature.py               ← GET /api/ai/literature (Tool 3)
+└── dashboard/                      ← React source (→ ~/eln-dashboard in Cloud Shell)
+    ├── AIChatPanel.js              ← floating chat panel v3
+    ├── App.js                      ← full dashboard UI
+    ├── index.js
+    ├── index.html
     ├── package.json
-    ├── public/
-    │   ├── index.html
-    │   └── staticwebapp.config.json  ← AAD auth enforcement
-    └── src/
-        ├── index.js
-        ├── App.js                  ← full dashboard UI
-        └── AIChatPanel.js          ← floating chat panel
+    └── staticwebapp.config.json    ← AAD auth enforcement
+
+```
+
+**In Cloud Shell (built from repo):**
+```
+~/eln-api/        ← git clone of eln-platform repo
+~/eln-dashboard/  ← populated by restore_session.sh from ~/eln-api/dashboard/
+    public/index.html
+    src/index.js, App.js, AIChatPanel.js
+    package.json, staticwebapp.config.json
 ```
 
 ---
@@ -238,6 +281,23 @@ Accepts JSON body with ANY combination:
 ```
 Project drill-down returns max `limit` (default 50) most recent experiments.
 
+### POST /api/ai/export (fetch.py)
+Direct CSV export — bypasses the agent entirely. Returns a streaming CSV response.
+
+**Request body:**
+```json
+{
+  "days": 30,                    // last N days (ignored if from_date set)
+  "from_date": "2026-04-01",     // ISO date string, inclusive
+  "to_date":   "2026-06-30",     // ISO date string, inclusive (to 23:59:59)
+  "project_code": "P013E00",     // optional filter
+  "author": "ravi",              // optional LIKE filter on e.author
+  "cas_number": "41340-36-7"     // optional exact match
+}
+```
+All parameters optional. No parameters → full dataset.
+`experiment_status` is decoded in the SELECT: 1→In Progress, 2→Submitted, 3→Approved, 4→Rejected, 5→Closed, 6→Archived.
+
 ### POST /api/ai/chat (agent.py)
 - Agent ID: `asst_iujfiErrYF9CfqgyB6BqY4Xn`
 - Model: `gpt-5-4` (gpt-5.4 deployment on aifoundry-eln-covvalent)
@@ -274,24 +334,29 @@ Font: **Inter** (Google Fonts). Never use generic grays, reds, purples, or any c
 - `staticwebapp.config.json` must be in `public/` for auth enforcement
 - **SWA identity.7 bug (Apr 2026):** custom AAD auth block causes `clientPrincipal` to return null — always use built-in pre-configured provider, never add custom `auth` block
 
-### Chat Panel (AIChatPanel.js)
+### Chat Panel (AIChatPanel.js) — v3
 - sessionStorage persistence: `eln_chat_messages`, `eln_chat_thread_id`
-- CSV download triggers automatically when agent returns a markdown table
+- CSV download triggers automatically when agent returns a markdown table or ` ```csv ` block
 - Typing indicator with stage progression: thinking → fetching → searching → writing
+- **↓ CSV button** in input bar calls `POST /api/ai/export` directly (bypasses agent)
+  - Date parsing order: ISO date (`2026-04-01`) → day-month (`1st April`) → month-day (`April 1`) → N days (`30 days`) → default 90 days
+  - Also parses `project_code` (pattern `[A-Z][0-9]{3}[A-Z][0-9]{2}`) and `author:name` from input text
+  - Filename: `eln-export-from-2026-04-01.csv` or `eln-export-90d.csv`
+- **↑ button** sends message to agent as before
+- Hint text: `↑ Ask AI · ↓ CSV downloads full dataset directly`
 
 ### Deploy commands (Cloud Shell)
 ```bash
-# API
-cd ~/eln-api
-zip -r ~/eln-api-clean.zip . --exclude "antenv/*"
-az webapp deploy --name eln-api-covvalent --resource-group rg-eln-covvalent --src-path ~/eln-api-clean.zip --type zip --async true
+# Restore session first (fill in PAT):
+bash ~/eln-api/restore_session.sh
 
-# Dashboard
-cd ~/eln-dashboard
-REACT_APP_API_URL=https://eln-api-covvalent-asfhf0abbvh2bphd.southindia-01.azurewebsites.net npm run build
-SWA_TOKEN=$(az staticwebapp secrets list --name eln-dashboard-covvalent --query 'properties.apiKey' -o tsv)
-npx @azure/static-web-apps-cli@1.1.7 deploy ./build --deployment-token "$SWA_TOKEN" --env production
+# Deploy API:
+bash ~/eln-api/deploy_api.sh
+
+# Deploy Dashboard:
+bash ~/eln-api/deploy_dashboard.sh
 ```
+Scripts live in repo root — pulled automatically by `restore_session.sh`.
 
 ---
 
@@ -306,6 +371,7 @@ Key tool routing rules in the system prompt:
 - **Date queries** → always `fetch_experiment` with `days` param, NEVER `search_experiments`
 - **Chemistry class queries** → `fetch_experiment` with `chemistry` param first, then fetch detail, then `search_literature`
 - **Project identity** → always open with `**[Code] — [Name] (CAS [number])**`
+- **Bulk export queries** → redirected to ↓ CSV button ("use the ↓ button to download the full dataset as CSV")
 
 **To patch the agent system prompt:**
 ```bash
@@ -379,9 +445,12 @@ curl -s -X POST \
 | az webapp deploy | Always use `--async true` — synchronous polling causes Cloud Shell disconnection |
 | WEBSITE_CONTENTOVERVNET=1 | Never add to Function Apps — kills Python worker silently |
 | Key Vault | RBAC-enabled — use `az role assignment create`, never `az keyvault set-policy` |
-| Cloud Shell | Resets between sessions — all files and env vars lost. Source of truth = OneDrive folder |
+| Cloud Shell | Resets between sessions — all files and env vars lost. Source of truth = GitHub repo + OneDrive |
 | DIMA password | Notify techsupport@dugroup.in whenever ellman password rotates — they reconnect VPN |
 | aiohttp | Must be in requirements.txt — azure-identity async needs it |
+| /api/ai/export date | Date regex must run before days regex — "1st April" must parse to from_date=2026-04-01, not days=1 |
+| fetch_experiment schema | Tool definition must include days, chemistry, product_name, cas_number params — agent cannot call modes it doesn't know about |
+| FOUNDRY_ENDPOINT | Already includes `/api/projects/eln-agent-project` — base_url = FOUNDRY_ENDPOINT, never append again |
 
 ---
 
@@ -400,20 +469,13 @@ curl -s -X POST \
 
 ## Cloud Shell Session Restore
 
-Run at the start of every Cloud Shell session:
+All session setup is now scripted in the repo. Run at the start of every Cloud Shell session:
 ```bash
-az login --identity
-az account set --subscription 9e25d11c-3753-4b8c-a575-0bcc44f964d4
-
-# Smoke tests
-curl -s https://eln-api-covvalent-asfhf0abbvh2bphd.southindia-01.azurewebsites.net/health
-curl -s https://eln-api-covvalent-asfhf0abbvh2bphd.southindia-01.azurewebsites.net/api/dashboard/summary | python3 -m json.tool
-
-# Verify agent model
-TOKEN=$(az account get-access-token --resource https://ai.azure.com --query accessToken -o tsv)
-curl -s "https://aifoundry-eln-covvalent.services.ai.azure.com/api/projects/eln-agent-project/assistants/asst_iujfiErrYF9CfqgyB6BqY4Xn?api-version=2025-05-15-preview" \
-  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool | grep '"model"'
+# Edit PAT="ghp_xxxx" at the top of the file, then:
+bash ~/eln-api/restore_session.sh
 ```
+This sets subscription, git identity, clones/pulls the repo, health-checks the API,
+copies dashboard source files to `~/eln-dashboard/{src,public}`, and runs `npm install`.
 
 ---
 
@@ -451,6 +513,17 @@ Then edit the relevant sections directly:
 
 ### Trigger phrase for manual update
 > *"Update ELN_PLATFORM_CONTEXT.md with what changed today"*
+
+### What changed in the 25 June 2026 session
+- GitHub repo created: https://github.com/covvalentadmin/eln-platform (private, covvalentadmin)
+- Repo structure: `routers/` + `dashboard/` (React source) at root; Python files at root
+- `restore_session.sh` rewritten: Azure sub → git identity → PAT-authenticated clone/pull → health check → dashboard workspace copy → npm install
+- `deploy_api.sh` added: zip main.py + routers/ → az webapp deploy --async
+- `deploy_dashboard.sh` added: npm run build → swa token → npx swa deploy
+- `POST /api/ai/export` added in fetch.py: streaming CSV, supports days/from_date/to_date/project_code/author/cas_number, experiment_status decoded
+- AIChatPanel v3: ↓ button calls /api/ai/export directly; date regex order fixed (ISO → DMY → MDY → days → default 90); hint text updated
+- Agent system prompt updated: bulk export queries redirected to ↓ CSV button
+- Critical rules added: date regex order, fetch_experiment tool schema completeness, FOUNDRY_ENDPOINT duplication
 
 ### What changed in the 24 June 2026 session
 - gpt-5.4 deployed on `aifoundry-eln-covvalent` as deployment `gpt-5-4`
