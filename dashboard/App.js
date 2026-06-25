@@ -4,7 +4,7 @@
  * SWA built-in Entra ID auth — no MSAL — user info via /.auth/me
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import AIChatPanel from './AIChatPanel';
 
 const API_BASE = process.env.REACT_APP_API_URL ||
@@ -53,7 +53,9 @@ function Sidebar({ active, onNav, user }) {
     { key: 'summary',     icon: '◈', label: 'Summary',     sub: 'Efficiency & KPIs' },
     { key: 'projects',    icon: '⬡', label: 'Projects',    sub: 'All campaigns' },
     { key: 'experiments', icon: '⚗', label: 'Experiments', sub: 'Recent ELN entries' },
-    { key: 'askai',       icon: '⚗', label: 'Ask AI',      sub: 'Chemistry agent' },
+    { key: 'askai',       icon: '⚗', label: 'Ask AI',        sub: 'Chemistry agent' },
+    { key: 'reports',     icon: '📋', label: 'Reports',       sub: 'Analysis & meeting docs' },
+    { key: 'meeting',     icon: '🎙️', label: 'Meeting Copilot', sub: 'Voice to report' },
   ];
   return (
     <div style={{ width: '210px', minHeight: '100vh', background: C.navy, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
@@ -234,6 +236,23 @@ function ProjectsView({ onSelectProject }) {
   const [showGantt, setShowGantt] = useState(false);
   const [sortField, setSortField] = useState('project_code');
   const [sortAsc, setSortAsc]     = useState(true);
+  const [genBusy, setGenBusy]     = useState({});
+  const [toast, setToast]         = useState(null);
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 4000); };
+
+  const generateReport = async (e, projectCode) => {
+    e.stopPropagation();
+    setGenBusy(b => ({ ...b, [projectCode]: true }));
+    try {
+      await apiFetch('/api/ai/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_code: projectCode, triggered_by: 'manual' }) });
+      showToast(`Report queued for ${projectCode} — check Reports tab`);
+    } catch (err) {
+      showToast(`Error: ${err.message}`);
+    } finally {
+      setGenBusy(b => { const n = { ...b }; delete n[projectCode]; return n; });
+    }
+  };
 
   useEffect(() => {
     apiFetch('/api/projects').then(setProjects).catch(e => setError(e.message)).finally(() => setLoading(false));
@@ -247,6 +266,9 @@ function ProjectsView({ onSelectProject }) {
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: C.white }}>
+      {toast && (
+        <div style={{ position: 'fixed', bottom: '80px', right: '28px', background: C.navy, color: C.white, fontFamily: FONT, fontSize: '13px', fontWeight: 600, padding: '12px 20px', borderRadius: '8px', boxShadow: '0 4px 18px rgba(0,11,54,0.3)', zIndex: 9999, borderLeft: `4px solid ${C.cyan}`, maxWidth: '360px' }}>{toast}</div>
+      )}
       <div style={{ padding: '24px 28px 0', borderBottom: `2px solid ${C.ice}`, paddingBottom: '16px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
           <div>
@@ -288,6 +310,7 @@ function ProjectsView({ onSelectProject }) {
                 <SortTh field="cas_number"     label="CAS"          sortField={sortField} sortAsc={sortAsc} onSort={toggleSort} />
                 <SortTh field="generic_name"   label="GENERIC NAME" sortField={sortField} sortAsc={sortAsc} onSort={toggleSort} />
                 <SortTh field="project_status" label="STATUS"       sortField={sortField} sortAsc={sortAsc} onSort={toggleSort} />
+                <th style={{ padding: '10px 14px', background: C.navy, color: C.white, fontSize: '11px', fontWeight: 700, letterSpacing: '0.6px', position: 'sticky', top: 0 }}>REPORT</th>
               </tr>
             </thead>
             <tbody>
@@ -306,6 +329,11 @@ function ProjectsView({ onSelectProject }) {
                     <span style={{ background: p.project_status === 1 ? C.navy : C.ice, color: p.project_status === 1 ? C.white : C.textDim, borderRadius: '10px', padding: '3px 12px', fontSize: '11px', fontWeight: 700 }}>
                       {p.project_status === 1 ? 'Active' : 'Closed'}
                     </span>
+                  </td>
+                  <td style={{ padding: '11px 14px' }} onClick={e => e.stopPropagation()}>
+                    <button onClick={e => generateReport(e, p.project_code)} disabled={!!genBusy[p.project_code]} style={{ background: genBusy[p.project_code] ? C.ice : C.navy, color: genBusy[p.project_code] ? C.textDim : C.white, border: 'none', borderRadius: '6px', padding: '5px 12px', fontSize: '11px', fontWeight: 700, cursor: genBusy[p.project_code] ? 'default' : 'pointer', fontFamily: FONT, whiteSpace: 'nowrap' }}>
+                      {genBusy[p.project_code] ? '…' : '+ Report'}
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -593,6 +621,255 @@ function ExperimentsView({ onSelectExperiment }) {
   );
 }
 
+// ── Reports view ─────────────────────────────────────────────────────────────
+function ReportsView() {
+  const [reports, setReports]   = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [filter, setFilter]     = useState('');
+  const [genBusy, setGenBusy]   = useState({});
+  const [toast, setToast]       = useState(null);
+
+  useEffect(() => {
+    apiFetch('/api/ai/reports').then(setReports).catch(() => setReports([])).finally(() => setLoading(false));
+  }, []);
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 4000); };
+
+  const generateReport = async (projectCode) => {
+    setGenBusy(b => ({ ...b, [projectCode]: true }));
+    try {
+      await apiFetch('/api/ai/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_code: projectCode, triggered_by: 'manual' }) });
+      showToast(`Report queued for ${projectCode}`);
+      setTimeout(() => apiFetch('/api/ai/reports').then(setReports).catch(() => {}), 3000);
+    } catch (e) {
+      showToast(`Error: ${e.message}`);
+    } finally {
+      setGenBusy(b => { const n = { ...b }; delete n[projectCode]; return n; });
+    }
+  };
+
+  const filtered = reports.filter(r => !filter || [r.project_code, r.generated_by, r.report_type].some(v => v?.toLowerCase().includes(filter.toLowerCase())));
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: C.white }}>
+      {toast && (
+        <div style={{ position: 'fixed', bottom: '80px', right: '28px', background: C.navy, color: C.white, fontFamily: FONT, fontSize: '13px', fontWeight: 600, padding: '12px 20px', borderRadius: '8px', boxShadow: '0 4px 18px rgba(0,11,54,0.3)', zIndex: 9999, borderLeft: `4px solid ${C.cyan}`, maxWidth: '360px' }}>{toast}</div>
+      )}
+      <div style={{ padding: '24px 28px 16px', borderBottom: `2px solid ${C.ice}`, flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+          <div>
+            <h2 style={{ color: C.navy, fontFamily: FONT, fontSize: '22px', fontWeight: 800, margin: 0 }}>Reports</h2>
+            <div style={{ color: C.textDim, fontFamily: FONT, fontSize: '13px', marginTop: '4px' }}>{reports.length} reports · analysis & meeting documents</div>
+          </div>
+          <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Filter by project, author…" style={{ background: C.ice, border: `1.5px solid ${C.border}`, borderRadius: '6px', padding: '8px 14px', color: C.blue, fontFamily: FONT, fontSize: '13px', width: '240px', outline: 'none' }} />
+        </div>
+      </div>
+      {loading ? <div style={{ padding: '24px 28px', color: C.textDim, fontFamily: FONT }}>Loading reports…</div> : (
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          {filtered.length === 0 ? (
+            <div style={{ padding: '32px 28px', color: C.textDim, fontFamily: FONT, fontSize: '14px' }}>
+              No reports yet. Click <strong>+ Report</strong> on any project in the Projects tab.
+            </div>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: FONT, fontSize: '13px' }}>
+              <thead>
+                <tr style={{ background: C.navy }}>
+                  {['PROJECT','TYPE','DATE','GENERATED BY','STATUS','DOWNLOAD',''].map(h => (
+                    <th key={h} style={{ padding: '10px 14px', textAlign: 'left', color: C.white, fontSize: '11px', fontWeight: 700, letterSpacing: '0.6px', position: 'sticky', top: 0 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((r, i) => (
+                  <tr key={r.report_id} style={{ borderBottom: `1px solid ${C.ice}`, background: i % 2 === 0 ? C.white : C.ice }}>
+                    <td style={{ padding: '11px 14px', color: C.navy, fontWeight: 700, fontFamily: 'monospace', fontSize: '12px' }}>{r.project_code || r.topic || '—'}</td>
+                    <td style={{ padding: '11px 14px', color: C.textDim }}>{r.report_type || (r.topic ? 'Meeting' : 'Project')}</td>
+                    <td style={{ padding: '11px 14px', color: C.textDim, whiteSpace: 'nowrap' }}>{r.generated_date ? r.generated_date.slice(0, 10) : '—'}</td>
+                    <td style={{ padding: '11px 14px', color: C.textDim }}>{r.generated_by || r.author || '—'}</td>
+                    <td style={{ padding: '11px 14px' }}>
+                      <span style={{ background: r.status === 'complete' ? C.navy : r.status === 'failed' ? '#c0392b' : C.ice, color: r.status === 'complete' || r.status === 'failed' ? C.white : C.textDim, borderRadius: '10px', padding: '3px 12px', fontSize: '11px', fontWeight: 700 }}>{r.status || 'pending'}</span>
+                    </td>
+                    <td style={{ padding: '11px 14px' }}>
+                      {r.blob_url && <a href={r.blob_url} target="_blank" rel="noreferrer" style={{ color: C.blue, fontWeight: 600, fontSize: '12px', textDecoration: 'none' }}>↓ Download</a>}
+                    </td>
+                    <td style={{ padding: '11px 14px' }}>
+                      {r.project_code && (
+                        <button onClick={() => generateReport(r.project_code)} disabled={!!genBusy[r.project_code]} style={{ background: genBusy[r.project_code] ? C.ice : 'transparent', border: `1.5px solid ${C.border}`, color: C.blue, borderRadius: '6px', padding: '4px 12px', fontSize: '11px', fontWeight: 600, cursor: genBusy[r.project_code] ? 'default' : 'pointer', fontFamily: FONT }}>
+                          {genBusy[r.project_code] ? '…' : '↻ Regenerate'}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Meeting Copilot view ──────────────────────────────────────────────────────
+function MeetingCopilotView({ user }) {
+  const [recording, setRecording]     = useState(false);
+  const [transcript, setTranscript]   = useState('');
+  const [projectCode, setProjectCode] = useState('');
+  const [audioFile, setAudioFile]     = useState(null);
+  const [generating, setGenerating]   = useState(false);
+  const [result, setResult]           = useState(null);
+  const [error, setError]             = useState(null);
+  const recogRef                      = useRef(null);
+
+  const startRecording = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { setError('Speech recognition requires Chrome or Edge. Upload an audio file instead.'); return; }
+    setError(null);
+    const recog = new SR();
+    recog.lang = 'en-IN';
+    recog.interimResults = true;
+    recog.continuous = true;
+    recog.onresult = (e) => {
+      let finalText = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) finalText += e.results[i][0].transcript + ' ';
+      }
+      if (finalText) setTranscript(t => t + finalText);
+    };
+    recog.onerror = (e) => { setError(`Mic error: ${e.error}`); setRecording(false); };
+    recog.onend   = () => setRecording(false);
+    recog.start();
+    recogRef.current = recog;
+    setRecording(true);
+  };
+
+  const stopRecording = () => {
+    recogRef.current?.stop();
+    setRecording(false);
+  };
+
+  const generateReport = async () => {
+    if (!transcript.trim() && !audioFile) { setError('Record or upload audio, or paste a transcript first.'); return; }
+    setGenerating(true); setError(null); setResult(null);
+    try {
+      let finalTranscript = transcript;
+      if (audioFile && !transcript.trim()) {
+        const fd = new FormData();
+        fd.append('audio', audioFile);
+        const res = await fetch(`${API_BASE}/api/ai/speech`, { method: 'POST', body: fd });
+        if (!res.ok) throw new Error(`Transcription failed (HTTP ${res.status})`);
+        const data = await res.json();
+        finalTranscript = data.transcript;
+        setTranscript(finalTranscript);
+      }
+      const data = await apiFetch('/api/ai/meeting', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transcript: finalTranscript, project_code: projectCode || null, author: user?.userDetails || 'unknown' }),
+      });
+      setResult(data);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: '0 28px 28px', background: C.white }}>
+      <PageHeader title="Meeting Copilot" sub="Voice or transcript → structured R&D meeting report" />
+
+      <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', maxWidth: '900px' }}>
+        {/* Left — recording + transcript */}
+        <div style={{ flex: 1, minWidth: '320px' }}>
+          {/* Mic button */}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '14px', marginBottom: '24px' }}>
+            <button
+              onClick={recording ? stopRecording : startRecording}
+              style={{
+                width: '96px', height: '96px', borderRadius: '50%',
+                background: recording ? C.cyan : C.navy,
+                border: `3px solid ${recording ? C.navy : C.cyan}`,
+                color: recording ? C.navy : C.white,
+                fontSize: '32px', cursor: 'pointer',
+                boxShadow: recording ? `0 0 0 8px rgba(157,209,241,0.25)` : '0 4px 18px rgba(0,11,54,0.25)',
+                transition: 'all 0.2s',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+              title={recording ? 'Stop recording' : 'Start recording'}
+            >
+              {recording ? '⏹' : '🎙️'}
+            </button>
+            <div style={{ color: recording ? C.cyan : C.textDim, fontFamily: FONT, fontSize: '13px', fontWeight: 600 }}>
+              {recording ? 'Recording… click to stop' : 'Click to record (Chrome/Edge)'}
+            </div>
+          </div>
+
+          {/* Transcript */}
+          <div style={{ color: C.blue, fontFamily: FONT, fontSize: '11px', fontWeight: 700, letterSpacing: '1px', marginBottom: '6px' }}>TRANSCRIPT</div>
+          <textarea
+            value={transcript}
+            onChange={e => setTranscript(e.target.value)}
+            placeholder="Spoken text appears here automatically, or paste your transcript…"
+            rows={10}
+            style={{ width: '100%', boxSizing: 'border-box', background: C.ice, border: `1.5px solid ${C.border}`, borderRadius: '8px', padding: '12px 14px', color: C.blue, fontFamily: FONT, fontSize: '13px', lineHeight: '1.6', resize: 'vertical', outline: 'none' }}
+          />
+          <div style={{ color: C.textSub, fontFamily: FONT, fontSize: '11px', marginTop: '4px' }}>{transcript.length} chars</div>
+        </div>
+
+        {/* Right — config + generate */}
+        <div style={{ width: '240px', flexShrink: 0 }}>
+          <div style={{ color: C.blue, fontFamily: FONT, fontSize: '11px', fontWeight: 700, letterSpacing: '1px', marginBottom: '6px' }}>PROJECT CODE (optional)</div>
+          <input
+            value={projectCode}
+            onChange={e => setProjectCode(e.target.value.toUpperCase())}
+            placeholder="e.g. CAS-2024-001"
+            style={{ width: '100%', boxSizing: 'border-box', background: C.ice, border: `1.5px solid ${C.border}`, borderRadius: '6px', padding: '8px 14px', color: C.blue, fontFamily: 'monospace', fontSize: '13px', outline: 'none', marginBottom: '20px' }}
+          />
+
+          <div style={{ color: C.blue, fontFamily: FONT, fontSize: '11px', fontWeight: 700, letterSpacing: '1px', marginBottom: '6px' }}>UPLOAD AUDIO (optional)</div>
+          <label style={{ display: 'block', background: C.ice, border: `1.5px dashed ${C.border}`, borderRadius: '6px', padding: '12px 14px', cursor: 'pointer', textAlign: 'center', fontFamily: FONT, fontSize: '12px', color: C.textDim, marginBottom: '20px' }}>
+            <input type="file" accept=".wav,.webm,.mp4,.m4a,audio/*" onChange={e => setAudioFile(e.target.files[0])} style={{ display: 'none' }} />
+            {audioFile ? <span style={{ color: C.blue, fontWeight: 600 }}>{audioFile.name}</span> : '📎 .wav .webm .mp4 .m4a'}
+          </label>
+
+          <button
+            onClick={generateReport}
+            disabled={generating || (!transcript.trim() && !audioFile)}
+            style={{
+              width: '100%', background: generating ? C.ice : C.navy,
+              border: 'none', color: generating ? C.textDim : C.white,
+              borderRadius: '8px', padding: '13px', fontFamily: FONT, fontSize: '14px',
+              fontWeight: 700, cursor: generating || (!transcript.trim() && !audioFile) ? 'default' : 'pointer',
+              boxShadow: generating ? 'none' : '0 3px 12px rgba(0,11,54,0.2)',
+              transition: 'all 0.15s',
+            }}
+          >
+            {generating ? 'Generating…' : '⚗ Generate Report'}
+          </button>
+
+          {error && (
+            <div style={{ marginTop: '14px', background: '#fdf2f2', border: `1.5px solid #e57373`, borderRadius: '6px', padding: '10px 14px', color: C.danger, fontFamily: FONT, fontSize: '12px' }}>{error}</div>
+          )}
+
+          {result && (
+            <div style={{ marginTop: '20px', background: C.ice, border: `1.5px solid ${C.border}`, borderLeft: `4px solid ${C.navy}`, borderRadius: '8px', padding: '14px 16px', fontFamily: FONT }}>
+              <div style={{ color: C.navy, fontSize: '12px', fontWeight: 700, marginBottom: '8px' }}>Report ready</div>
+              <div style={{ color: C.textDim, fontSize: '11px', marginBottom: '4px' }}>{result.topic}</div>
+              <div style={{ color: C.textDim, fontSize: '11px', marginBottom: '12px' }}>{result.generated_date}</div>
+              {result.blob_url && (
+                <a href={result.blob_url} target="_blank" rel="noreferrer" style={{ display: 'inline-block', background: C.navy, color: C.white, borderRadius: '6px', padding: '8px 16px', fontSize: '12px', fontWeight: 700, textDecoration: 'none' }}>
+                  ↓ Download .docx
+                </a>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Root App ──────────────────────────────────────────────────────────────────
 export default function App() {
   const [user, setUser]               = useState(null);
@@ -608,13 +885,16 @@ export default function App() {
   const handleNav = useCallback((key) => {
     if (key === 'askai') { setShowChat(prev => !prev); return; }
     setShowChat(false);
-    setView(key); setSelectedProject(null); setSelectedExperiment(null);
+    setView(key);
+    if (key !== 'project_experiments') { setSelectedProject(null); }
+    setSelectedExperiment(null);
   }, []);
 
   if (!authChecked) return <div style={{ background: C.white, minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.blue, fontFamily: FONT, fontSize: '14px' }}>Authenticating…</div>;
   if (!user) return null;
 
   const activeNavKey = showChat ? 'askai' : (view === 'project_experiments' ? 'projects' : view);
+
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: C.white, fontFamily: FONT }}>
@@ -625,6 +905,8 @@ export default function App() {
         {view === 'projects'            && <ProjectsView onSelectProject={p => { setSelectedProject(p); setView('project_experiments'); }} />}
         {view === 'project_experiments' && selectedProject && <ProjectExperimentsView project={selectedProject} onBack={() => { setView('projects'); setSelectedProject(null); }} onSelectExperiment={setSelectedExperiment} />}
         {view === 'experiments'         && <ExperimentsView onSelectExperiment={setSelectedExperiment} />}
+        {view === 'reports'             && <ReportsView />}
+        {view === 'meeting'             && <MeetingCopilotView user={user} />}
         {selectedExperiment && <ExperimentDetailPanel experiment={selectedExperiment} onClose={() => setSelectedExperiment(null)} />}
       </div>
 
