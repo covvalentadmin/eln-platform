@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ELN Intelligence — Covvalent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
+  <style>
+    :root {
+      --navy:  #000B36;
+      --blue:  #0E2673;
+      --cyan:  #9DD1F1;
+      --ice:   #DEEBF7;
+      --white: #FFFFFF;
+      --r:     12px;
+      --sh:    0 2px 12px rgba(14,38,115,0.08);
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', sans-serif; background: var(--ice); color: var(--blue); min-height: 100vh; }
+
+    /* Auth */
+    #auth-screen { min-height: 100vh; background: var(--navy); display: flex; align-items: center; justify-content: center; }
+    .auth-card { background: rgba(157,209,241,0.07); border: 1px solid rgba(157,209,241,0.2); border-radius: var(--r); padding: 48px 56px; text-align: center; max-width: 420px; width: 90%; }
+    .auth-logo { font-size: 1.75rem; font-weight: 800; color: var(--white); letter-spacing: -0.02em; margin-bottom: 4px; }
+    .auth-tagline { font-size: 0.65rem; font-weight: 600; color: var(--cyan); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 36px; }
+    .auth-title { font-size: 1.4rem; font-weight: 700; color: var(--white); margin-bottom: 10px; }
+    .auth-sub { font-size: 0.875rem; color: var(--cyan); margin-bottom: 32px; line-height: 1.6; opacity: 0.8; }
+    .btn-signin { background: var(--blue); color: var(--white); border: none; border-radius: 8px; padding: 14px 32px; font-family: 'Inter', sans-serif; font-size: 0.9rem; font-weight: 600; cursor: pointer; width: 100%; transition: background 0.2s; }
+    .btn-signin:hover { background: #1a3a8f; }
+    .auth-error { margin-top: 14px; font-size: 0.8rem; color: #ff8a8a; }
+
+    /* App */
+    #app { display: none; min-height: 100vh; }
+    .sidebar { position: fixed; left: 0; top: 0; bottom: 0; width: 220px; background: var(--navy); display: flex; flex-direction: column; z-index: 100; }
+    .sidebar-logo { padding: 28px 24px 20px; border-bottom: 1px solid rgba(157,209,241,0.15); }
+    .sidebar-logo-name { font-size: 1.25rem; font-weight: 800; color: var(--white); letter-spacing: -0.02em; }
+    .sidebar-logo-tag { font-size: 0.65rem; font-weight: 500; color: var(--cyan); letter-spacing: 0.08em; text-transform: uppercase; margin-top: 2px; }
+    .sidebar-label { padding: 20px 24px 8px; font-size: 0.65rem; font-weight: 600; color: rgba(157,209,241,0.5); letter-spacing: 0.1em; text-transform: uppercase; }
+    .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 24px; font-size: 0.85rem; font-weight: 500; color: rgba(157,209,241,0.7); cursor: pointer; border-left: 3px solid transparent; transition: all 0.15s; }
+    .nav-item:hover { color: var(--white); background: rgba(157,209,241,0.06); }
+    .nav-item.active { color: var(--white); background: rgba(157,209,241,0.1); border-left-color: var(--cyan); }
+    .nav-icon { width: 16px; text-align: center; font-size: 14px; }
+    .sidebar-footer { margin-top: auto; padding: 16px 24px; border-top: 1px solid rgba(157,209,241,0.15); }
+    .user-info { font-size: 0.75rem; color: var(--cyan); margin-bottom: 10px; word-break: break-all; }
+    .btn-signout { font-size: 0.75rem; color: rgba(157,209,241,0.5); background: none; border: none; cursor: pointer; padding: 0; font-family: 'Inter', sans-serif; }
+    .btn-signout:hover { color: var(--cyan); }
+
+    /* Main */
+    .main { margin-left: 220px; padding: 32px; min-height: 100vh; }
+    .page { display: none; }
+    .page.active { display: block; }
+    .page-header { margin-bottom: 24px; }
+    .page-title { font-size: 1.75rem; font-weight: 800; color: var(--navy); letter-spacing: -0.02em; }
+    .page-sub { font-size: 0.875rem; color: var(--blue); margin-top: 4px; opacity: 0.6; }
+    .breadcrumb { font-size: 0.8rem; color: var(--blue); opacity: 0.6; margin-bottom: 6px; cursor: pointer; }
+    .breadcrumb span { color: var(--blue); opacity: 1; font-weight: 600; }
+    .breadcrumb:hover { opacity: 1; }
+
+    /* Stats */
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; margin-bottom: 24px; }
+    .stat-card { background: var(--white); border-radius: var(--r); padding: 20px 22px; box-shadow: var(--sh); }
+    .stat-label { font-size: 0.65rem; font-weight: 600; color: var(--blue); opacity: 0.6; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 8px; }
+    .stat-value { font-size: 1.9rem; font-weight: 800; color: var(--navy); letter-spacing: -0.03em; line-height: 1; }
+    .stat-detail { font-size: 0.7rem; color: var(--blue); opacity: 0.55; margin-top: 5px; }
+    .stat-card.accent { background: var(--navy); }
+    .stat-card.accent .stat-label { color: var(--cyan); opacity: 0.8; }
+    .stat-card.accent .stat-value { color: var(--white); }
+    .stat-card.accent .stat-detail { color: var(--cyan); opacity: 0.7; }
+
+    /* Cards */
+    .card { background: var(--white); border-radius: var(--r); padding: 22px; box-shadow: var(--sh); margin-bottom: 18px; }
+    .card-title { font-size: 0.8rem; font-weight: 700; color: var(--navy); margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--ice); text-transform: uppercase; letter-spacing: 0.06em; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+
+    /* Tables */
+    .data-table { width: 100%; border-collapse: collapse; }
+    .data-table th { text-align: left; font-size: 0.68rem; font-weight: 600; color: var(--white); background: var(--blue); padding: 9px 12px; letter-spacing: 0.05em; text-transform: uppercase; }
+    .data-table th:first-child { border-radius: 6px 0 0 6px; }
+    .data-table th:last-child { border-radius: 0 6px 6px 0; }
+    .data-table td { padding: 10px 12px; font-size: 0.8rem; color: var(--blue); border-bottom: 1px solid var(--ice); }
+    .data-table tr:nth-child(even) td { background: #f8fafd; }
+    .data-table tr.clickable:hover td { background: var(--ice); cursor: pointer; }
+
+    /* Badges */
+    .badge { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 0.68rem; font-weight: 600; }
+    .badge-draft { background: #fef9c3; color: #854d0e; }
+    .badge-review { background: #dbeafe; color: #1e40af; }
+    .badge-approved { background: #dcfce7; color: #166534; }
+    .badge-completed { background: #f0fdf4; color: #15803d; }
+    .badge-active { background: var(--ice); color: var(--blue); }
+    .badge-rm { background: rgba(157,209,241,0.3); color: var(--navy); }
+
+    /* Bar chart */
+    .bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .bar-label { font-size: 0.75rem; color: var(--blue); width: 130px; flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .bar-track { flex: 1; height: 7px; background: var(--ice); border-radius: 4px; }
+    .bar-fill { height: 7px; background: var(--navy); border-radius: 4px; }
+    .bar-count { font-size: 0.72rem; font-weight: 600; color: var(--navy); width: 28px; text-align: right; }
+
+    /* Experiment detail */
+    .exp-header { background: var(--navy); border-radius: var(--r); padding: 24px; margin-bottom: 18px; }
+    .exp-number { font-size: 0.75rem; font-weight: 600; color: var(--cyan); letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 6px; }
+    .exp-title { font-size: 1.2rem; font-weight: 700; color: var(--white); line-height: 1.4; margin-bottom: 12px; }
+    .exp-meta { display: flex; gap: 24px; flex-wrap: wrap; }
+    .exp-meta-item { font-size: 0.78rem; color: var(--cyan); opacity: 0.8; }
+    .exp-meta-item strong { color: var(--white); opacity: 1; }
+    .objective-box { background: var(--ice); border-radius: 8px; padding: 14px 16px; font-size: 0.82rem; color: var(--blue); line-height: 1.6; margin-bottom: 18px; }
+    .conclusion-box { background: #f0fdf4; border-radius: 8px; padding: 14px 16px; font-size: 0.82rem; color: #166534; line-height: 1.6; margin-bottom: 18px; border-left: 3px solid #22c55e; }
+    .section-tag { display: inline-block; background: var(--ice); border-radius: 6px; padding: 4px 10px; font-size: 0.72rem; font-weight: 600; color: var(--blue); margin-right: 6px; margin-bottom: 6px; }
+
+    /* Loading / error */
+    .loading { text-align: center; padding: 48px; color: var(--blue); opacity: 0.45; font-size: 0.875rem; }
+    .spinner { width: 26px; height: 26px; border: 3px solid var(--ice); border-top-color: var(--blue); border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 10px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .empty { text-align: center; padding: 32px; font-size: 0.82rem; color: var(--blue); opacity: 0.45; }
+
+    /* ETL */
+    .etl-row { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid var(--ice); font-size: 0.78rem; }
+    .etl-row:last-child { border-bottom: none; }
+    .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px; }
+    .status-dot.success { background: #22c55e; }
+    .status-dot.failed { background: #ef4444; }
+
+    /* Back button */
+    .btn-back { background: none; border: 1px solid var(--blue); border-radius: 7px; padding: 7px 16px; font-family: 'Inter', sans-serif; font-size: 0.8rem; font-weight: 600; color: var(--blue); cursor: pointer; margin-bottom: 20px; transition: all 0.15s; }
+    .btn-back:hover { background: var(--blue); color: var(--white); }
+
+    /* Yield highlight */
+    .yield-box { display: inline-block; background: #dcfce7; border-radius: 8px; padding: 4px 12px; font-size: 0.85rem; font-weight: 700; color: #166534; }
+    .yield-box.na { background: var(--ice); color: var(--blue); opacity: 0.6; }
+  </style>
+</head>
+<body>
+
+<!-- Auth -->
+<div id="auth-screen">
+  <div class="auth-card">
+    <div class="auth-logo">Covvalent</div>
+    <div class="auth-tagline">Solubilizing Complexity</div>
+    <div class="auth-title">ELN Intelligence</div>
+    <div class="auth-sub">Sign in with your Covvalent Microsoft account to access R&amp;D experiment analytics.</div>
+    <button class="btn-signin" onclick="signIn()">Sign in with Microsoft</button>
+    <div class="auth-error" id="auth-error"></div>
+  </div>
+</div>
+
+<!-- App -->
+<div id="app">
+  <nav class="sidebar">
+    <div class="sidebar-logo">
+      <div class="sidebar-logo-name">Covvalent</div>
+      <div class="sidebar-logo-tag">ELN Intelligence</div>
+    </div>
+    <div class="sidebar-label">Analytics</div>
+    <div class="nav-item active" onclick="navTo('overview', this)"><span class="nav-icon">◈</span> Overview</div>
+    <div class="nav-item" onclick="navTo('projects', this)"><span class="nav-icon">⬡</span> Projects</div>
+    <div class="nav-item" onclick="navTo('experiments', this)"><span class="nav-icon">⚗</span> Experiments</div>
+    <div class="nav-item" onclick="navTo('materials', this)"><span class="nav-icon">◉</span> Materials</div>
+    <div class="nav-item" onclick="navTo('requests', this)"><span class="nav-icon">◫</span> Requests</div>
+    <div class="sidebar-label">System</div>
+    <div class="nav-item" onclick="navTo('etl', this)"><span class="nav-icon">↻</span> Data Sync</div>
+    <div class="sidebar-footer">
+      <div class="user-info" id="user-name">—</div>
+      <button class="btn-signout" onclick="signOut()">Sign out</button>
+    </div>
+  </nav>
+
+  <main class="main">
+
+    <!-- Overview -->
+    <div class="page active" id="page-overview">
+      <div class="page-header">
+        <div class="page-title">Overview</div>
+        <div class="page-sub" id="overview-sync"></div>
+      </div>
+      <div class="stat-grid" id="overview-stats"><div class="loading"><div class="spinner"></div></div></div>
+      <div class="two-col">
+        <div class="card">
+          <div class="card-title">Recent Experiments</div>
+          <div id="recent-experiments"><div class="loading"><div class="spinner"></div></div></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Top Materials by Use</div>
+          <div id="top-materials"><div class="loading"><div class="spinner"></div></div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Recent Projects</div>
+        <div id="recent-projects"><div class="loading"><div class="spinner"></div></div></div>
+      </div>
+    </div>
+
+    <!-- Projects -->
+    <div class="page" id="page-projects">
+      <div id="projects-list-view">
+        <div class="page-header">
+          <div class="page-title">Projects</div>
+          <div class="page-sub">Click any project to view its experiments</div>
+        </div>
+        <div class="card">
+          <div class="card-title">All Projects</div>
+          <div id="projects-table"><div class="loading"><div class="spinner"></div></div></div>
+        </div>
+      </div>
+      <div id="project-experiments-view" style="display:none">
+        <button class="btn-back" onclick="showProjectsList()">← Back to Projects</button>
+        <div class="page-header">
+          <div class="breadcrumb" onclick="showProjectsList()">Projects / <span id="exp-project-name"></span></div>
+          <div class="page-title" id="exp-project-title"></div>
+          <div class="page-sub" id="exp-project-cas"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Experiments</div>
+          <div id="project-experiments-table"><div class="loading"><div class="spinner"></div></div></div>
+        </div>
+      </div>
+      <div id="experiment-detail-view" style="display:none">
+        <button class="btn-back" onclick="showProjectExperiments()">← Back to Experiments</button>
+        <div id="experiment-detail-content"><div class="loading"><div class="spinner"></div></div></div>
+      </div>
+    </div>
+
+    <!-- Experiments (all) -->
+    <div class="page" id="page-experiments">
+      <div class="page-header">
+        <div class="page-title">Experiments</div>
+        <div class="page-sub">All experiments across all projects — most recent first</div>
+      </div>
+      <div class="card">
+        <div class="card-title">All Experiments</div>
+        <div id="experiments-table"><div class="loading"><div class="spinner"></div></div></div>
+      </div>
+    </div>
+
+    <!-- Materials -->
+    <div class="page" id="page-materials">
+      <div class="page-header">
+        <div class="page-title">Materials</div>
+        <div class="page-sub">Reagent and solvent usage across all experiments</div>
+      </div>
+      <div class="two-col">
+        <div class="card"><div class="card-title">Usage Frequency</div><div id="materials-chart"><div class="loading"><div class="spinner"></div></div></div></div>
+        <div class="card"><div class="card-title">Unique Compounds</div><div id="compounds-list"><div class="loading"><div class="spinner"></div></div></div></div>
+      </div>
+    </div>
+
+    <!-- Requests -->
+    <div class="page" id="page-requests">
+      <div class="page-header">
+        <div class="page-title">Material Requests</div>
+        <div class="page-sub">All SR requests raised by the R&amp;D team</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Recent Requests</div>
+        <div id="requests-table"><div class="loading"><div class="spinner"></div></div></div>
+      </div>
+    </div>
+
+    <!-- ETL -->
+    <div class="page" id="page-etl">
+      <div class="page-header">
+        <div class="page-title">Data Sync</div>
+        <div class="page-sub">ETL run history — syncs nightly at 2:00 AM from DIMA ELN (Condor + Atlas)</div>
+      </div>
+      <div class="stat-grid" id="etl-stats"><div class="loading"><div class="spinner"></div></div></div>
+      <div class="card">
+        <div class="card-title">Recent Sync Runs</div>
+        <div id="etl-runs"><div class="loading"><div class="spinner"></div></div></div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────
+const AAD_CLIENT_ID = "254daf05-cc26-4b24-a1bc-31df8c0d4993";
+const AAD_TENANT_ID = "b0d15824-98fa-4de2-9b20-bd4f0ed01352";
+const API_APP_ID    = "f9c1c1ef-3289-4e13-87ed-adb163fc0152";
+const API_BASE      = "https://eln-api-covvalent-asfhf0abbvh2bphd.southindia-01.azurewebsites.net";
+
+const EXP_STATUS = {1:"Draft",2:"Under Review",3:"Approved",4:"Locked",5:"Completed",6:"Abandoned"};
+const EXP_BADGE  = {1:"badge-draft",2:"badge-review",3:"badge-approved",4:"badge-active",5:"badge-completed",6:"badge-active"};
+
+const msalInstance = new msal.PublicClientApplication({
+  auth: { clientId: AAD_CLIENT_ID, authority: `https://login.microsoftonline.com/${AAD_TENANT_ID}`, redirectUri: window.location.origin },
+  cache: { cacheLocation: "sessionStorage" }
+});
+let accessToken = null;
+let currentProjectId = null;
+let currentProjectName = null;
+
+// ── Auth ──────────────────────────────────────────────────────────────
+async function signIn() {
+  document.getElementById("auth-error").textContent = "";
+  try {
+    const r = await msalInstance.loginPopup({ scopes: [`api://${API_APP_ID}/ELN.Read`] });
+    accessToken = r.accessToken;
+    document.getElementById("user-name").textContent = r.account.username;
+    document.getElementById("auth-screen").style.display = "none";
+    document.getElementById("app").style.display = "block";
+    loadAll();
+  } catch(e) { document.getElementById("auth-error").textContent = e.message; }
+}
+
+async function signOut() { await msalInstance.logoutPopup(); location.reload(); }
+
+async function getToken() {
+  const accounts = msalInstance.getAllAccounts();
+  if (!accounts.length) return null;
+  try {
+    const r = await msalInstance.acquireTokenSilent({ scopes: [`api://${API_APP_ID}/ELN.Read`], account: accounts[0] });
+    return r.accessToken;
+  } catch { return null; }
+}
+
+window.addEventListener("load", async () => {
+  try {
+    const r = await msalInstance.handleRedirectPromise();
+    if (r) {
+      accessToken = r.accessToken;
+      document.getElementById("user-name").textContent = r.account.username;
+      document.getElementById("auth-screen").style.display = "none";
+      document.getElementById("app").style.display = "block";
+      loadAll();
+    }
+  } catch(e) {}
+});
+
+async function apiFetch(path) {
+  const token = await getToken() || accessToken;
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const res = await fetch(API_BASE + path, { headers });
+  if (!res.ok) throw new Error(`API ${path} returned ${res.status}`);
+  return res.json();
+}
+
+// ── Navigation ────────────────────────────────────────────────────────
+function navTo(name, el) {
+  document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+  document.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
+  document.getElementById("page-" + name).classList.add("active");
+  el.classList.add("active");
+  if (name === "projects") showProjectsList();
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────
+const fmt   = n => n == null ? "—" : Number(n).toLocaleString();
+const fmtD  = s => !s ? "—" : new Date(s).toLocaleDateString("en-IN", {day:"2-digit",month:"short",year:"numeric"});
+const fmtDT = s => !s ? "—" : new Date(s).toLocaleString("en-IN", {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
+const stripHtml = s => !s ? "" : s.replace(/<[^>]+>/g,"").trim();
+const expBadge = st => `<span class="badge ${EXP_BADGE[st]||'badge-active'}">${EXP_STATUS[st]||st}</span>`;
+const yieldBox = v => v != null ? `<span class="yield-box">${Number(v).toFixed(1)}%</span>` : `<span class="yield-box na">—</span>`;
+
+// ── Load all ──────────────────────────────────────────────────────────
+function loadAll() {
+  loadOverview();
+  loadProjects();
+  loadAllExperiments();
+  loadMaterials();
+  loadRequests();
+  loadEtl();
+}
+
+// ── Overview ──────────────────────────────────────────────────────────
+async function loadOverview() {
+  try {
+    const d = await apiFetch("/api/dashboard/summary");
+    const s = d.summary;
+    document.getElementById("overview-sync").innerHTML =
+      `<span style="font-size:0.7rem;opacity:0.6">↻ Last synced ${fmtDT(s.last_sync)} from DIMA ELN</span>`;
+
+    document.getElementById("overview-stats").innerHTML = `
+      <div class="stat-card accent">
+        <div class="stat-label">Active Projects</div>
+        <div class="stat-value">${fmt(s.active_projects)}</div>
+        <div class="stat-detail">of ${fmt(s.total_projects)} total</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Experiments</div>
+        <div class="stat-value">${fmt(s.total_experiments)}</div>
+        <div class="stat-detail">${fmt(s.draft_experiments)} draft · ${fmt(s.completed_experiments)} completed</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Unique Compounds</div>
+        <div class="stat-value">${fmt(s.unique_compounds)}</div>
+        <div class="stat-detail">with CAS numbers</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Material Requests</div>
+        <div class="stat-value">${fmt(s.total_requests)}</div>
+        <div class="stat-detail">across all teams</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Materials Used</div>
+        <div class="stat-value">${fmt(s.total_materials)}</div>
+        <div class="stat-detail">reagents &amp; solvents</div>
+      </div>
+    `;
+
+    // Recent experiments
+    document.getElementById("recent-experiments").innerHTML = `
+      <table class="data-table">
+        <thead><tr><th>Exp No.</th><th>Title</th><th>Project</th><th>Status</th><th>Date</th></tr></thead>
+        <tbody>${d.recent_experiments.map(e => `
+          <tr class="clickable" onclick="openExperimentFromOverview(${e.experiment_id})">
+            <td><strong>${e.exp_number_full||"—"}</strong></td>
+            <td>${e.title||"—"}</td>
+            <td>${e.project_code||"—"}</td>
+            <td>${expBadge(e.experiment_status)}</td>
+            <td>${fmtD(e.start_date)}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>`;
+
+    // Top materials
+    const max = d.top_materials[0]?.usage_count||1;
+    document.getElementById("top-materials").innerHTML = d.top_materials.map(m => `
+      <div class="bar-row">
+        <div class="bar-label" title="${m.material_name}">${m.material_name}</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${(m.usage_count/max*100).toFixed(1)}%"></div></div>
+        <div class="bar-count">${m.usage_count}</div>
+      </div>`).join("");
+
+    // Recent projects
+    document.getElementById("recent-projects").innerHTML = `
+      <table class="data-table">
+        <thead><tr><th>Code</th><th>Compound</th><th>CAS</th><th>Started</th></tr></thead>
+        <tbody>${d.recent_projects.map(p => `
+          <tr class="clickable" onclick="openProjectExperiments(${p.project_id}, '${(p.project_code||"").replace(/'/g,"\\'")}', '${(p.title||"").replace(/'/g,"\\'")}')">
+            <td><strong>${p.project_code}</strong></td>
+            <td>${p.title}</td>
+            <td style="font-family:monospace;font-size:0.75rem">${p.cas_number||"—"}</td>
+            <td>${fmtD(p.start_date)}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>`;
+  } catch(e) {
+    document.getElementById("overview-stats").innerHTML = `<div class="loading">Failed: ${e.message}</div>`;
+  }
+}
+
+// ── Projects ──────────────────────────────────────────────────────────
+async function loadProjects() {
+  try {
+    const d = await apiFetch("/api/projects");
+    document.getElementById("projects-table").innerHTML = `
+      <table class="data-table">
+        <thead><tr><th>Code</th><th>Title</th><th>CAS</th><th>Started</th><th>Status</th><th>Experiments</th><th>Requests</th></tr></thead>
+        <tbody>${d.data.map(p => `
+          <tr class="clickable" onclick="openProjectExperiments(${p.project_id}, '${(p.project_code||"").replace(/'/g,"\\'")}', '${(p.title||"").replace(/'/g,"\\'")}')">
+            <td><strong>${p.project_code}</strong></td>
+            <td>${p.title}</td>
+            <td style="font-family:monospace;font-size:0.75rem">${p.cas_number||"—"}</td>
+            <td>${fmtD(p.start_date)}</td>
+            <td><span class="badge ${p.is_rm_project?'badge-rm':'badge-active'}">${p.is_rm_project?"RM":"Active"}</span></td>
+            <td>${fmt(p.experiment_count)}</td>
+            <td>${fmt(p.request_count)}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>`;
+  } catch(e) {
+    document.getElementById("projects-table").innerHTML = `<div class="loading">Failed: ${e.message}</div>`;
+  }
+}
+
+function showProjectsList() {
+  document.getElementById("projects-list-view").style.display = "block";
+  document.getElementById("project-experiments-view").style.display = "none";
+  document.getElementById("experiment-detail-view").style.display = "none";
+}
+
+async function openProjectExperiments(projectId, projectCode, projectTitle) {
+  // Switch to projects page first
+  document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+  document.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
+  document.getElementById("page-projects").classList.add("active");
+  document.querySelectorAll(".nav-item")[1].classList.add("active");
+
+  currentProjectId = projectId;
+  currentProjectName = projectCode;
+
+  document.getElementById("projects-list-view").style.display = "none";
+  document.getElementById("project-experiments-view").style.display = "block";
+  document.getElementById("experiment-detail-view").style.display = "none";
+  document.getElementById("exp-project-name").textContent = projectCode;
+  document.getElementById("exp-project-title").textContent = projectTitle;
+  document.getElementById("project-experiments-table").innerHTML = '<div class="loading"><div class="spinner"></div>Loading experiments</div>';
+
+  try {
+    const d = await apiFetch(`/api/projects/${projectId}/experiments`);
+    if (!d.data.length) {
+      document.getElementById("project-experiments-table").innerHTML = '<div class="empty">No experiments found for this project.</div>';
+      return;
+    }
+    document.getElementById("project-experiments-table").innerHTML = `
+      <table class="data-table">
+        <thead><tr><th>Exp No.</th><th>Title</th><th>Status</th><th>Date</th><th>Materials</th><th>Products</th></tr></thead>
+        <tbody>${d.data.map(e => `
+          <tr class="clickable" onclick="openExperimentDetail(${e.experiment_id})">
+            <td><strong>${e.exp_number_full||"—"}</strong></td>
+            <td style="max-width:320px">${e.title||"—"}</td>
+            <td>${expBadge(e.experiment_status)}</td>
+            <td>${fmtD(e.start_date)}</td>
+            <td>${fmt(e.material_count)}</td>
+            <td>${fmt(e.product_count)}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>`;
+  } catch(e) {
+    document.getElementById("project-experiments-table").innerHTML = `<div class="loading">Failed: ${e.message}</div>`;
+  }
+}
+
+function showProjectExperiments() {
+  document.getElementById("project-experiments-view").style.display = "block";
+  document.getElementById("experiment-detail-view").style.display = "none";
+}
+
+async function openExperimentDetail(expId) {
+  document.getElementById("project-experiments-view").style.display = "none";
+  document.getElementById("experiment-detail-view").style.display = "block";
+  document.getElementById("experiment-detail-content").innerHTML = '<div class="loading"><div class="spinner"></div>Loading experiment data</div>';
+
+  try {
+    const d = await apiFetch(`/api/experiments/${expId}`);
+    const e = d.experiment;
+    const status = EXP_STATUS[e.experiment_status] || e.experiment_status;
+
+    let html = `
+      <div class="exp-header">
+        <div class="exp-number">${e.exp_number_full||"—"} · ${e.project_code}</div>
+        <div class="exp-title">${e.title||"Untitled"}</div>
+        <div class="exp-meta">
+          <div class="exp-meta-item"><strong>Status</strong> ${status}</div>
+          <div class="exp-meta-item"><strong>Project</strong> ${e.project_title||"—"}</div>
+          <div class="exp-meta-item"><strong>Team</strong> ${e.team_code||"—"}</div>
+          <div class="exp-meta-item"><strong>Date</strong> ${fmtD(e.start_date)}</div>
+        </div>
+      </div>`;
+
+    // Sections
+    if (d.sections.length) {
+      html += `<div style="margin-bottom:16px">`;
+      d.sections.forEach(s => { html += `<span class="section-tag">${s.section_title}</span>`; });
+      html += `</div>`;
+    }
+
+    // Objective
+    const obj = stripHtml(e.objective);
+    if (obj) html += `<div class="objective-box"><strong>Objective:</strong> ${obj}</div>`;
+
+    // Conclusion
+    const conc = stripHtml(e.conclusion);
+    if (conc) html += `<div class="conclusion-box"><strong>Conclusion:</strong> ${conc}</div>`;
+
+    // Raw materials
+    if (d.raw_materials.length) {
+      html += `<div class="card">
+        <div class="card-title">Raw Materials (${d.raw_materials.length})</div>
+        <table class="data-table">
+          <thead><tr><th>Material</th><th>CAS</th><th>Formula</th><th>Quantity</th><th>Purity %</th><th>Moles</th><th>Ratio</th><th>Limiting</th></tr></thead>
+          <tbody>${d.raw_materials.map(m => `
+            <tr>
+              <td><strong>${m.raw_material_name||"—"}</strong></td>
+              <td style="font-family:monospace;font-size:0.74rem">${m.cas_number||"—"}</td>
+              <td style="font-family:monospace;font-size:0.74rem">${m.molecular_formula||"—"}</td>
+              <td>${m.quantity != null ? fmt(m.quantity) : "—"}</td>
+              <td>${m.purity != null ? Number(m.purity).toFixed(1) : "—"}</td>
+              <td>${m.moles != null ? Number(m.moles).toFixed(4) : "—"}</td>
+              <td>${m.ratio != null ? Number(m.ratio).toFixed(2) : "—"}</td>
+              <td>${m.is_limiting_agent ? "✓" : ""}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>`;
+    }
+
+    // Products + Yield
+    if (d.products.length) {
+      html += `<div class="card">
+        <div class="card-title">Reaction Products &amp; Yield (${d.products.length})</div>
+        <table class="data-table">
+          <thead><tr><th>Product</th><th>Formula</th><th>MW</th><th>Dry Weight</th><th>Crude Yield</th><th>Purified Yield</th><th>Purity %</th><th>Atom Economy</th></tr></thead>
+          <tbody>${d.products.map(p => `
+            <tr>
+              <td><strong>${p.product_name||"—"}</strong></td>
+              <td style="font-family:monospace;font-size:0.74rem">${p.molecular_formula||"—"}</td>
+              <td>${p.molecular_weight != null ? Number(p.molecular_weight).toFixed(2) : "—"}</td>
+              <td>${p.dry_wt != null ? fmt(p.dry_wt)+"g" : "—"}</td>
+              <td>${yieldBox(p.crude_yield)}</td>
+              <td>${yieldBox(p.purified_yield)}</td>
+              <td>${p.purity != null ? Number(p.purity).toFixed(1) : "—"}</td>
+              <td>${p.atom_economy != null ? Number(p.atom_economy).toFixed(1)+"%" : "—"}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>`;
+    }
+
+    // TLC
+    if (d.tlc.length) {
+      html += `<div class="card">
+        <div class="card-title">TLC Data (${d.tlc.length})</div>
+        <table class="data-table">
+          <thead><tr><th>Plate</th><th>Solvent System</th><th>Spot A</th><th>Rf1</th><th>Spot B</th><th>Rf2</th></tr></thead>
+          <tbody>${d.tlc.map(t => `
+            <tr>
+              <td>${t.plate_title||"—"}</td>
+              <td>${t.plate_notes||"—"}</td>
+              <td>${t.spot_a_notes||"—"}</td>
+              <td style="font-family:monospace">${t.rf1||"—"}</td>
+              <td>${t.spot_b_notes||"—"}</td>
+              <td style="font-family:monospace">${t.rf2||"—"}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>`;
+    }
+
+    if (!d.raw_materials.length && !d.products.length && !d.tlc.length) {
+      html += `<div class="card"><div class="empty">No experimental data recorded yet — experiment may still be in progress.</div></div>`;
+    }
+
+    document.getElementById("experiment-detail-content").innerHTML = html;
+  } catch(e) {
+    document.getElementById("experiment-detail-content").innerHTML = `<div class="loading">Failed: ${e.message}</div>`;
+  }
+}
+
+async function openExperimentFromOverview(expId) {
+  document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+  document.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
+  document.getElementById("page-projects").classList.add("active");
+  document.querySelectorAll(".nav-item")[1].classList.add("active");
+  document.getElementById("projects-list-view").style.display = "none";
+  document.getElementById("project-experiments-view").style.display = "none";
+  document.getElementById("experiment-detail-view").style.display = "block";
+  document.getElementById("experiment-detail-content").innerHTML = '<div class="loading"><div class="spinner"></div>Loading</div>';
+  await openExperimentDetail(expId);
+}
+
+// ── All Experiments ───────────────────────────────────────────────────
+async function loadAllExperiments() {
+  try {
+    const d = await apiFetch("/api/experiments?limit=100");
+    document.getElementById("experiments-table").innerHTML = `
+      <table class="data-table">
+        <thead><tr><th>Exp No.</th><th>Title</th><th>Project</th><th>Status</th><th>Date</th></tr></thead>
+        <tbody>${d.data.map(e => `
+          <tr class="clickable" onclick="openExperimentFromOverview(${e.experiment_id})">
+            <td><strong>${e.exp_number_full||"—"}</strong></td>
+            <td style="max-width:300px">${e.title||"—"}</td>
+            <td>${e.project_code||"—"}</td>
+            <td>${expBadge(e.experiment_status)}</td>
+            <td>${fmtD(e.start_date)}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>`;
+  } catch(e) {
+    document.getElementById("experiments-table").innerHTML = `<div class="loading">Failed: ${e.message}</div>`;
+  }
+}
+
+// ── Materials ─────────────────────────────────────────────────────────
+async function loadMaterials() {
+  try {
+    const d = await apiFetch("/api/dashboard/summary");
+    const tm = d.top_materials;
+    const max = tm[0]?.usage_count||1;
+    document.getElementById("materials-chart").innerHTML = tm.map(m => `
+      <div class="bar-row">
+        <div class="bar-label" title="${m.material_name}">${m.material_name}</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${(m.usage_count/max*100).toFixed(1)}%"></div></div>
+        <div class="bar-count">${m.usage_count}</div>
+      </div>`).join("");
+
+    const md = await apiFetch("/api/materials?limit=200");
+    const unique = {};
+    md.data.forEach(m => { if (m.cas_number && !unique[m.cas_number]) unique[m.cas_number] = m.material_name; });
+    const entries = Object.entries(unique).slice(0,20);
+    document.getElementById("compounds-list").innerHTML = `
+      <table class="data-table">
+        <thead><tr><th>Compound</th><th>CAS Number</th></tr></thead>
+        <tbody>${entries.map(([cas,name]) => `
+          <tr><td>${name}</td><td style="font-family:monospace;font-size:0.74rem">${cas}</td></tr>`).join("")}
+        </tbody>
+      </table>
+      <div style="font-size:0.72rem;color:var(--blue);opacity:0.5;margin-top:10px">
+        Showing 20 of ${d.summary.unique_compounds} unique compounds
+      </div>`;
+  } catch(e) {
+    document.getElementById("materials-chart").innerHTML = `<div class="loading">Failed: ${e.message}</div>`;
+  }
+}
+
+// ── Requests ──────────────────────────────────────────────────────────
+async function loadRequests() {
+  try {
+    const d = await apiFetch("/api/requests?limit=100");
+    document.getElementById("requests-table").innerHTML = `
+      <table class="data-table">
+        <thead><tr><th>Request No.</th><th>Project</th><th>Team</th><th>Materials</th><th>Status</th><th>Raised</th></tr></thead>
+        <tbody>${d.data.map(r => `
+          <tr>
+            <td><strong>${r.request_number}</strong></td>
+            <td>${r.project_code||"—"}</td>
+            <td>${r.team_code||"—"}</td>
+            <td>${fmt(r.material_count)}</td>
+            <td><span class="badge badge-active">${r.request_status===1?"Open":"Closed"}</span></td>
+            <td>${fmtD(r.created_date)}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>`;
+  } catch(e) {
+    document.getElementById("requests-table").innerHTML = `<div class="loading">Failed: ${e.message}</div>`;
+  }
+}
+
+// ── ETL ───────────────────────────────────────────────────────────────
+async function loadEtl() {
+  try {
+    const [sql, etl] = await Promise.all([apiFetch("/health/sql"), apiFetch("/api/etl/status")]);
+    document.getElementById("etl-stats").innerHTML = `
+      <div class="stat-card accent">
+        <div class="stat-label">Last ETL Run</div>
+        <div class="stat-value" style="font-size:1rem">${fmtDT(sql.last_etl_run)}</div>
+        <div class="stat-detail">nightly at 02:00 AM IST</div>
+      </div>
+      <div class="stat-card"><div class="stat-label">Experiments</div><div class="stat-value">${fmt(sql.counts.experiments)}</div><div class="stat-detail">synced from Atlas</div></div>
+      <div class="stat-card"><div class="stat-label">Projects</div><div class="stat-value">${fmt(sql.counts.projects)}</div><div class="stat-detail">from Condor</div></div>
+      <div class="stat-card"><div class="stat-label">Requests</div><div class="stat-value">${fmt(sql.counts.requests)}</div><div class="stat-detail">SR records</div></div>
+      <div class="stat-card"><div class="stat-label">Exp Materials</div><div class="stat-value">${fmt(sql.counts.exp_materials)}</div><div class="stat-detail">raw materials</div></div>
+    `;
+    document.getElementById("etl-runs").innerHTML = etl.runs.map(r => `
+      <div class="etl-row">
+        <div><span class="status-dot ${r.status}"></span><strong>${fmtDT(r.run_started_at)}</strong>
+          ${r.error_message?`<span style="color:#ef4444;font-size:0.72rem;margin-left:8px">${r.error_message.slice(0,80)}</span>`:""}
+        </div>
+        <div style="font-size:0.72rem;color:var(--blue);opacity:0.7;text-align:right">
+          ${fmt(r.projects_upserted)}P · ${fmt(r.requests_upserted)}R · ${fmt(r.materials_upserted)}M · ${r.duration_seconds||0}s
+        </div>
+      </div>`).join("");
+  } catch(e) {
+    document.getElementById("etl-stats").innerHTML = `<div class="loading">Failed: ${e.message}</div>`;
+  }
+}
+</script>
+</body>
+</html>

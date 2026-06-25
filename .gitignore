@@ -1,0 +1,8 @@
+antenv/
+__pycache__/
+*.pyc
+.env
+*.zip
+node_modules/
+build/
+.python_version
