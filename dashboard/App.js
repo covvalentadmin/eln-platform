@@ -730,7 +730,7 @@ function ReportsView() {
                       </td>
                       <td style={{ padding: '11px 14px' }}>
                         {r.blob_url && r.status === 'complete'
-                          ? <a href={r.blob_url} target="_blank" rel="noreferrer" style={{ color: C.blue, fontWeight: 600, fontSize: '12px', textDecoration: 'none' }}>↓ Download</a>
+                          ? <a href={`${API_BASE}/api/ai/report/download/${r.report_id}`} target="_blank" rel="noreferrer" style={{ color: C.blue, fontWeight: 600, fontSize: '12px', textDecoration: 'none' }}>↓ Download</a>
                           : <span style={{ color: C.textSub, fontSize: '12px' }}>—</span>}
                       </td>
                     </tr>
@@ -822,7 +822,7 @@ function MeetingCopilotView({ user }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ transcript: finalTranscript, project_code: projectCode || null, author: user?.userDetails || '' }),
       });
-      setReportUrl(data.blob_url);
+      setReportUrl(`${API_BASE}/api/ai/report/download/${data.report_id}`);
       setReportMeta(data);
     } catch (e) {
       setError(e.message);
