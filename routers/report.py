@@ -252,7 +252,8 @@ def _build_project_report_docx(
     # ── Section 4: Literature & Patent Context ────────────────────────────────
     _add_heading(doc, "Section 4: Literature & Patent Context")
 
-    pubchem = literature.get("pubchem") or {}
+    pubchem_raw = literature.get("pubchem") or {}
+    pubchem = pubchem_raw[0] if isinstance(pubchem_raw, list) and pubchem_raw else pubchem_raw if isinstance(pubchem_raw, dict) else {}
     if pubchem:
         _add_heading(doc, "PubChem Compound Profile", level=2)
         for key in ["IUPACName", "MolecularFormula", "MolecularWeight", "InChIKey"]:
