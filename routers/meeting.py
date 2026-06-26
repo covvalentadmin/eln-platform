@@ -20,8 +20,8 @@ from pydantic import BaseModel
 router = APIRouter()
 
 # ── Config ────────────────────────────────────────────────────────────────────
-FOUNDRY_ENDPOINT = os.environ["FOUNDRY_ENDPOINT"]
-FOUNDRY_API_VER  = os.environ.get("FOUNDRY_API_VERSION", "2025-05-15-preview")
+AOAI_ENDPOINT    = os.environ.get("AOAI_ENDPOINT", "https://aoai-eln-covvalent-2e2ec.openai.azure.com")
+AOAI_API_VERSION = "2025-01-01-preview"
 AGENT_MODEL      = os.environ.get("AGENT_MODEL", "gpt-5-4")
 SPEECH_REGION    = os.environ.get("SPEECH_REGION", "centralindia")
 SPEECH_RESOURCE  = os.environ.get("SPEECH_RESOURCE", "speech-eln-covvalent")
@@ -134,15 +134,15 @@ async def _transcribe_audio(audio_bytes: bytes, content_type: str) -> tuple:
 
 # ── GPT call ──────────────────────────────────────────────────────────────────
 async def _call_gpt(system_prompt: str, user_content: str) -> str:
-    from azure.identity.aio import ManagedIdentityCredential
-    cred  = ManagedIdentityCredential()
-    token = await cred.get_token("https://ai.azure.com/.default")
+    from azure.identity.aio import DefaultAzureCredential
+    cred  = DefaultAzureCredential()
+    token = await cred.get_token("https://cognitiveservices.azure.com/.default")
     await cred.close()
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         r = await client.post(
-            f"{FOUNDRY_ENDPOINT}/openai/deployments/{AGENT_MODEL}/chat/completions"
-            f"?api-version={FOUNDRY_API_VER}",
+            f"{AOAI_ENDPOINT}/openai/deployments/{AGENT_MODEL}/chat/completions"
+            f"?api-version={AOAI_API_VERSION}",
             headers={"Authorization": f"Bearer {token.token}", "Content-Type": "application/json"},
             json={
                 "messages": [

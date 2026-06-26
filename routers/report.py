@@ -22,8 +22,8 @@ from pydantic import BaseModel
 router = APIRouter()
 
 # ── Config ────────────────────────────────────────────────────────────────────
-FOUNDRY_ENDPOINT = os.environ["FOUNDRY_ENDPOINT"]
-FOUNDRY_API_VER  = os.environ.get("FOUNDRY_API_VERSION", "2025-05-15-preview")
+AOAI_ENDPOINT    = os.environ.get("AOAI_ENDPOINT", "https://aoai-eln-covvalent-2e2ec.openai.azure.com")
+AOAI_API_VERSION = "2025-01-01-preview"
 AGENT_MODEL      = os.environ.get("AGENT_MODEL", "gpt-5-4")
 STORAGE_ACCOUNT  = "stelncoovalent"
 BLOB_CONTAINER   = "eln-reports"
@@ -70,19 +70,19 @@ def _rows_to_dicts(cur):
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 # ── Auth helper ───────────────────────────────────────────────────────────────
-async def _get_foundry_token() -> str:
-    from azure.identity.aio import ManagedIdentityCredential
-    cred = ManagedIdentityCredential()
-    token = await cred.get_token("https://ai.azure.com/.default")
+async def _get_aoai_token() -> str:
+    from azure.identity.aio import DefaultAzureCredential
+    cred = DefaultAzureCredential()
+    token = await cred.get_token("https://cognitiveservices.azure.com/.default")
     await cred.close()
     return token.token
 
 # ── GPT call ──────────────────────────────────────────────────────────────────
 async def _call_gpt(system_prompt: str, user_content: str) -> str:
-    token = await _get_foundry_token()
+    token = await _get_aoai_token()
     async with httpx.AsyncClient() as client:
         r = await client.post(
-            f"{FOUNDRY_ENDPOINT}/chat/completions?api-version={FOUNDRY_API_VER}",
+            f"{AOAI_ENDPOINT}/openai/deployments/{AGENT_MODEL}/chat/completions?api-version={AOAI_API_VERSION}",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json={
                 "messages": [
