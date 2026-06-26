@@ -242,7 +242,7 @@ def _build_project_report_docx(
 
     # ── Section 3: Chemistry Analysis (GPT) ──────────────────────────────────
     _add_heading(doc, "Section 3: Chemistry Analysis")
-    _add_heading(doc, "AI-Generated Analysis (gpt-5-4)", level=2)
+    _add_heading(doc, "AI-Generated Analysis (gpt-4o)", level=2)
     for paragraph in gpt_analysis.split("\n\n"):
         if paragraph.strip():
             _add_body(doc, paragraph.strip())
@@ -339,13 +339,15 @@ async def _run_report_generation(
             r.raise_for_status()
             fetch_data = r.json()
 
-        project     = fetch_data.get("project") or {}
-        experiments = fetch_data.get("experiments") or []
-        cas_number  = project.get("cas_number", "")
+        project_info     = fetch_data.get("project", {})
+        experiments      = fetch_data.get("experiments", [])
+        product_name     = project_info.get("project_title", project_code)
+        cas_number       = project_info.get("cas_number", "unknown")
+        experiment_count = len(experiments)
 
         # Fetch literature
         literature = {}
-        if cas_number:
+        if cas_number and cas_number != "unknown":
             try:
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     r = await client.get(f"{API_BASE}/api/ai/literature", params={"q": cas_number})
@@ -362,9 +364,8 @@ async def _run_report_generation(
         exp_summary = "\n".join(
             f"- {e.get('exp_number_full')} ({(e.get('created_date') or '')[:10]}): {e.get('title','')} "
             f"[{e.get('author','')}] status={e.get('experiment_status','')}"
-            for e in experiments[:60]
+            for e in experiments[:30]
         )
-        product_name = project.get("project_title", project_code)
         CHEMISTRY_USER = f"""You are reviewing Covvalent's internal experiment history for {product_name} (CAS {cas_number}).
 
 Experiment data:
@@ -383,14 +384,14 @@ Generate a structured analysis with these FIVE numbered sections:
         # Build Word doc
         generated_date = datetime.utcnow().strftime("%Y-%m-%d")
         docx_bytes = _build_project_report_docx(
-            project, experiments, gpt_analysis, literature, generated_date
+            project_info, experiments, gpt_analysis, literature, generated_date
         )
 
         # Upload to blob
         blob_path = f"{project_code}/{generated_date}-{project_code}-analysis.docx"
         blob_url  = await _upload_blob(docx_bytes, blob_path)
 
-        _update_report_record(report_id, "complete", blob_url, len(experiments))
+        _update_report_record(report_id, "complete", blob_url, experiment_count)
 
     except Exception as e:
         error_msg = traceback.format_exc()
