@@ -11,6 +11,7 @@ import os
 import io
 import json
 import asyncio
+import traceback
 import httpx
 import pyodbc
 from datetime import datetime, date
@@ -81,8 +82,7 @@ async def _call_gpt(system_prompt: str, user_content: str) -> str:
     token = await _get_foundry_token()
     async with httpx.AsyncClient() as client:
         r = await client.post(
-            f"{FOUNDRY_ENDPOINT}/openai/deployments/{AGENT_MODEL}/chat/completions"
-            f"?api-version={FOUNDRY_API_VER}",
+            f"{FOUNDRY_ENDPOINT}/chat/completions?api-version={FOUNDRY_API_VER}",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json={
                 "messages": [
@@ -393,8 +393,19 @@ Generate a structured analysis with these FIVE numbered sections:
         _update_report_record(report_id, "complete", blob_url, len(experiments))
 
     except Exception as e:
-        _update_report_record(report_id, "failed")
-        raise
+        error_msg = traceback.format_exc()
+        print(f"[REPORT BACKGROUND ERROR] report_id={report_id}: {error_msg}")
+        try:
+            conn = _get_conn()
+            cur  = conn.cursor()
+            cur.execute(
+                "UPDATE eln_project_reports SET status='failed', blob_url=? WHERE report_id=?",
+                f"ERROR: {str(e)[:400]}", report_id
+            )
+            conn.commit()
+            conn.close()
+        except Exception as db_err:
+            print(f"[REPORT BACKGROUND ERROR] DB update also failed: {db_err}")
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
