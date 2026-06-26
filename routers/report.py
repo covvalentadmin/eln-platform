@@ -410,6 +410,59 @@ Generate a structured analysis with these FIVE numbered sections:
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+
+# ── Download endpoint ─────────────────────────────────────────────────────────
+import re as _re
+import datetime as _dt
+from azure.storage.blob import generate_blob_sas, BlobSasPermissions
+from azure.storage.blob import BlobServiceClient as _BlobServiceClient
+from azure.identity import ManagedIdentityCredential as _MIC
+from fastapi.responses import RedirectResponse
+
+_STORAGE_ACCOUNT  = "stelncoovalent"
+_REPORTS_CONTAINER = "eln-reports"
+
+@router.get("/api/ai/report/download/{report_id}")
+def download_report(report_id: int):
+    """Generate a 1-hour SAS URL for a report blob and redirect."""
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT blob_url FROM eln_project_reports WHERE report_id=?",
+            (report_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row or not row[0] or not row[0].startswith("https://"):
+        raise HTTPException(status_code=404, detail="Report not found or not ready")
+
+    blob_url = row[0]
+    match = _re.search(rf"{_REPORTS_CONTAINER}/(.+)$", blob_url)
+    if not match:
+        raise HTTPException(status_code=500, detail="Cannot parse blob path from URL")
+    blob_path = match.group(1)
+
+    credential = _MIC()
+    blob_service = _BlobServiceClient(
+        account_url=f"https://{_STORAGE_ACCOUNT}.blob.core.windows.net",
+        credential=credential
+    )
+    start  = _dt.datetime.utcnow() - _dt.timedelta(minutes=5)
+    expiry = _dt.datetime.utcnow() + _dt.timedelta(hours=1)
+    delegation_key = blob_service.get_user_delegation_key(start, expiry)
+
+    sas = generate_blob_sas(
+        account_name=_STORAGE_ACCOUNT,
+        container_name=_REPORTS_CONTAINER,
+        blob_name=blob_path,
+        user_delegation_key=delegation_key,
+        permission=BlobSasPermissions(read=True),
+        expiry=expiry
+    )
+    sas_url = f"https://{_STORAGE_ACCOUNT}.blob.core.windows.net/{_REPORTS_CONTAINER}/{blob_path}?{sas}"
+    return RedirectResponse(url=sas_url)
+
 @router.post("/api/ai/report", status_code=202)
 async def generate_report(req: ReportRequest, background_tasks: BackgroundTasks):
     """Kick off project analysis report generation. Returns 202 immediately."""
