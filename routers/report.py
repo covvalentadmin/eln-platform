@@ -23,8 +23,8 @@ router = APIRouter()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 AOAI_ENDPOINT    = os.environ.get("AOAI_ENDPOINT", "https://aoai-eln-covvalent-2e2ec.openai.azure.com")
-AOAI_API_VERSION = "2025-01-01-preview"
-AGENT_MODEL      = os.environ.get("AGENT_MODEL", "gpt-5-4")
+AOAI_DEPLOYMENT  = "gpt-4o"
+AOAI_API_VERSION = "2024-12-01-preview"
 STORAGE_ACCOUNT  = "stelncoovalent"
 BLOB_CONTAINER   = "eln-reports"
 
@@ -82,7 +82,7 @@ async def _call_gpt(system_prompt: str, user_content: str) -> str:
     token = await _get_aoai_token()
     async with httpx.AsyncClient() as client:
         r = await client.post(
-            f"{AOAI_ENDPOINT}/openai/deployments/{AGENT_MODEL}/chat/completions?api-version={AOAI_API_VERSION}",
+            f"{AOAI_ENDPOINT}/openai/deployments/{AOAI_DEPLOYMENT}/chat/completions?api-version={AOAI_API_VERSION}",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json={
                 "messages": [
