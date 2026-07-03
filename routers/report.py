@@ -44,6 +44,28 @@ class NoteRequest(BaseModel):
     author: str
     captured_from: str = "manual"
 
+def _extract_summary(analysis_text: str, max_chars: int = 800) -> str:
+    """
+    Extract executive summary paragraph from GPT-4o analysis output.
+    Stored in SQL for the agent tool — must be concise.
+    """
+    import re
+    patterns = [
+        r"(?:executive summary|overview|summary)[:\s]*\n+([\s\S]+?)(?:\n\n|\n#+|\Z)",
+        r"#+\s*(?:executive summary|overview|summary)\s*\n+([\s\S]+?)(?:\n\n|\n#+|\Z)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, analysis_text, re.IGNORECASE)
+        if m:
+            candidate = m.group(1).strip()
+            if len(candidate) > 80:
+                return candidate[:max_chars]
+    paragraphs = [p.strip() for p in analysis_text.split("\n\n") if p.strip()]
+    for para in paragraphs:
+        if len(para) > 100:
+            return para[:max_chars]
+    return analysis_text[:max_chars]
+
 # ── DB helpers ────────────────────────────────────────────────────────────────
 def _get_conn():
     conn_str = (
@@ -315,13 +337,13 @@ async def _upload_blob(content: bytes, blob_path: str) -> str:
     return f"{account_url}/{BLOB_CONTAINER}/{blob_path}"
 
 # ── Report background task ────────────────────────────────────────────────────
-def _update_report_record(report_id: int, status: str, blob_url: str = None, exp_count: int = None):
+def _update_report_record(report_id: int, status: str, blob_url: str = None, exp_count: int = None, report_summary: str = None):
     conn = _get_conn()
     cur  = conn.cursor()
     if blob_url and exp_count is not None:
         cur.execute(
-            "UPDATE eln_project_reports SET status=?, blob_url=?, experiment_count=? WHERE report_id=?",
-            status, blob_url, exp_count, report_id
+            "UPDATE eln_project_reports SET status=?, blob_url=?, experiment_count=?, report_summary=? WHERE report_id=?",
+            status, blob_url, exp_count, report_summary, report_id
         )
     else:
         cur.execute("UPDATE eln_project_reports SET status=? WHERE report_id=?", status, report_id)
@@ -392,7 +414,8 @@ Generate a structured analysis with these FIVE numbered sections:
         blob_path = f"{project_code}/{generated_date}-{project_code}-analysis.docx"
         blob_url  = await _upload_blob(docx_bytes, blob_path)
 
-        _update_report_record(report_id, "complete", blob_url, experiment_count)
+        report_summary = _extract_summary(gpt_analysis)
+        _update_report_record(report_id, "complete", blob_url, experiment_count, report_summary)
 
     except Exception as e:
         error_msg = traceback.format_exc()
@@ -488,6 +511,54 @@ async def generate_report(req: ReportRequest, background_tasks: BackgroundTasks)
         "status":         "pending",
         "generated_date": generated_date,
         "message":        "Report generation started. Poll GET /api/ai/report/{project_code} for status.",
+    }
+
+
+@router.get("/api/ai/report/list/{project_code}")
+def list_project_reports(project_code: str):
+    """
+    Agent tool endpoint — reports for one project, newest first.
+    Lightweight: no blob reads, no SAS generation.
+    """
+    api_base = os.environ.get(
+        "API_BASE",
+        "https://eln-api-covvalent-asfhf0abbvh2bphd.southindia-01.azurewebsites.net",
+    )
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT report_id, project_code, generated_date, experiment_count,
+                   status, report_summary
+            FROM eln_project_reports
+            WHERE project_code = ?
+            ORDER BY generated_date DESC
+            """,
+            project_code,
+        )
+        rows = cursor.fetchall()
+        conn.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {
+        "project_code": project_code,
+        "report_count": len(rows),
+        "reports": [
+            {
+                "report_id":        r.report_id,
+                "generated_date":   str(r.generated_date),
+                "experiment_count": r.experiment_count,
+                "status":           r.status,
+                "report_summary":   r.report_summary,
+                "download_url": (
+                    f"{api_base}/api/ai/report/download/{r.report_id}"
+                    if r.status == "complete" else None
+                ),
+            }
+            for r in rows
+        ],
     }
 
 
