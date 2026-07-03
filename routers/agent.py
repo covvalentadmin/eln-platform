@@ -37,6 +37,33 @@ API_BASE = os.environ.get(
     "https://eln-api-covvalent-asfhf0abbvh2bphd.southindia-01.azurewebsites.net"
 )
 
+# ── Tool definitions (register with Foundry Assistant or pass at run time) ────
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_project_reports",
+            "description": (
+                "Retrieve previously generated analysis reports for a project. "
+                "Returns report metadata and a concise summary of each report's findings. "
+                "Call this FIRST whenever answering any project-level question so that "
+                "prior analysis is used as context rather than repeating retrieval "
+                "already covered in an existing report."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_code": {
+                        "type": "string",
+                        "description": "The project code, e.g. P112P00 or P100P02."
+                    }
+                },
+                "required": ["project_code"]
+            }
+        }
+    },
+]
+
 # ── Schema ────────────────────────────────────────────────────────────────────
 class ChatRequest(BaseModel):
     message: str
@@ -142,6 +169,16 @@ async def dispatch_tool(tool_name: str, tool_args: dict, tool_client: httpx.Asyn
             response.raise_for_status()
             raw = json.dumps(response.json())
             return truncate_tool_output(raw, "get_project_notes")
+
+        elif tool_name == "fetch_project_reports":
+            project_code = tool_args.get("project_code", "")
+            response = await tool_client.get(
+                f"{API_BASE}/api/ai/report/list/{project_code}",
+                timeout=15,
+            )
+            response.raise_for_status()
+            raw = json.dumps(response.json())
+            return truncate_tool_output(raw, "fetch_project_reports")
 
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
