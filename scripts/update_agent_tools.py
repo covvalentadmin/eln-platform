@@ -102,27 +102,6 @@ NEW_TOOLS = [
     },
 ]
 
-SYSTEM_PROMPT_ADDITION = """
-
-## PROJECT MEMORY — CAPTURED INSIGHTS
-
-When a user shares context about a project that is NOT in the ELN experiment records — such as:
-- "these experiments constitute the final process"
-- "we decided to abandon X route"
-- "for next steps we are considering Y chemistry"
-- "the key insight from this campaign was Z"
-- "this project is on hold because..."
-
-You MUST:
-1. Confirm: "I'll capture this as a project note for [project_code]: [one-line paraphrase of what you understood]"
-2. Call update_project_notes with {project_code, note_text: the insight as a clear statement, author: user login or "unknown"}
-3. Confirm: "Saved to [project_code] project memory. This will appear in all future reports and queries."
-
-When answering ANY query about a specific project, ALWAYS call get_project_notes({project_code}) first to check for captured context. Incorporate any notes into your response naturally — cite them as "Project notes:" before the note content.
-
-Notes are visible to all Covvalent users. Treat them as authoritative project context."""
-
-
 def get_token() -> str:
     """Get AAD token via Azure CLI."""
     try:
@@ -156,6 +135,35 @@ def foundry_request(method: str, path: str, body=None) -> dict:
         body_text = e.read().decode()
         print(f"HTTP {e.code} — {body_text}")
         raise
+
+
+def load_system_prompt_addition() -> str:
+    """Load additions from prompts/system_prompt_patch.json.
+    Extracts only the portion from PROJECT MEMORY onward so it can be
+    appended to the already-stripped base instructions in main()."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    patch_path = os.path.join(script_dir, '..', 'prompts', 'system_prompt_patch.json')
+    with open(patch_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    if isinstance(data, str):
+        instructions = data
+    elif isinstance(data, dict):
+        instructions = ""
+        for key in ('addition', 'content', 'instructions', 'text'):
+            if key in data:
+                instructions = data[key]
+                break
+        if not instructions:
+            instructions = '\n\n'.join(v for v in data.values() if isinstance(v, str))
+    else:
+        instructions = str(data)
+    # The JSON holds the full prompt (base + additions). Extract only the
+    # additions portion so main() doesn't duplicate the base when appending.
+    sentinel = '\n\n## PROJECT MEMORY'
+    idx = instructions.find(sentinel)
+    if idx != -1:
+        return instructions[idx:]
+    return instructions
 
 
 def main():
@@ -192,8 +200,9 @@ def main():
             current_prompt,
             flags=re.DOTALL
         )
-    new_prompt = current_prompt + SYSTEM_PROMPT_ADDITION
-    print("  Appending PROJECT MEMORY section to system prompt")
+    addition = load_system_prompt_addition()
+    new_prompt = current_prompt + addition
+    print("  Appending system prompt additions from system_prompt_patch.json")
 
     print(f"  Tools to register: {added}")
     print("Patching agent …")
