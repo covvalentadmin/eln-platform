@@ -13,6 +13,7 @@ Azure CLI must be logged in (az login / managed identity).
 """
 
 import os
+import re
 import sys
 import json
 import urllib.request
@@ -74,7 +75,31 @@ NEW_TOOLS = [
             },
             "strict": False
         }
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_project_reports",
+            "description": (
+                "Retrieve previously generated analysis reports for a project. "
+                "Returns report metadata and a concise summary of each report's findings. "
+                "Call this FIRST whenever answering any project-level question so that "
+                "prior analysis is used as context rather than repeating retrieval "
+                "already covered in an existing report."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_code": {
+                        "type": "string",
+                        "description": "The project code, e.g. P112P00 or P100P02."
+                    }
+                },
+                "required": ["project_code"]
+            },
+            "strict": False
+        }
+    },
 ]
 
 SYSTEM_PROMPT_ADDITION = """
@@ -185,8 +210,6 @@ def main():
     ]
     print(f"Done. Registered tools: {registered}")
 
-
-import re
 
 if __name__ == "__main__":
     main()
