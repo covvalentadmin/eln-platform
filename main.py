@@ -272,12 +272,29 @@ def dashboard_summary():
     except Exception as e:
         raise HTTPException(500, detail=str(e))
 
+def _shift_to_month_start(d, months_back):
+    m = d.month - months_back
+    y = d.year
+    while m <= 0:
+        m += 12
+        y -= 1
+    return date(y, m, 1)
+
 # ── Dashboard efficiency (3-period) ──────────────────────────────────────────
 @app.get("/api/dashboard/efficiency")
 def dashboard_efficiency():
     try:
         conn = get_conn()
         cur = conn.cursor()
+
+        today = date.today()
+        end_date         = today.replace(day=1)              # exclusive upper bound = start of current month
+        last_month_start = _shift_to_month_start(end_date, 1)
+        quarter_start    = _shift_to_month_start(end_date, 3)
+        full_year_start  = _shift_to_month_start(end_date, 12)
+
+        def _fmt_range(start, end):
+            return f"{start:%b %Y} – {end:%b %Y}"
 
         def period_stats(start_date, end_date):
             cur.execute("""
@@ -319,12 +336,15 @@ def dashboard_efficiency():
             }
 
         result = {
-            "last_full_year": {"label": "Last Full Year", "period": "Jun 2025 – May 2026",
-                               **period_stats("2025-06-01", "2026-06-01")},
-            "last_quarter":   {"label": "Last Quarter",   "period": "Mar 2026 – May 2026",
-                               **period_stats("2026-03-01", "2026-06-01")},
-            "last_month":     {"label": "Last Month",     "period": "May 2026",
-                               **period_stats("2026-05-01", "2026-06-01")},
+            "last_full_year": {"label": "Last Full Year",
+                               "period": _fmt_range(full_year_start, last_month_start),
+                               **period_stats(full_year_start.isoformat(), end_date.isoformat())},
+            "last_quarter":   {"label": "Last Quarter",
+                               "period": _fmt_range(quarter_start, last_month_start),
+                               **period_stats(quarter_start.isoformat(), end_date.isoformat())},
+            "last_month":     {"label": "Last Month",
+                               "period": f"{last_month_start:%b %Y}",
+                               **period_stats(last_month_start.isoformat(), end_date.isoformat())},
         }
         conn.close()
         return result
