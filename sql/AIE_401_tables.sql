@@ -14,7 +14,8 @@ CREATE TABLE eln_project_reports (
     blob_url        NVARCHAR(500),
     triggered_by    NVARCHAR(50),   -- 'manual' or 'weekly_automation'
     generated_by    NVARCHAR(100),  -- user login
-    status          NVARCHAR(20)  DEFAULT 'pending'  -- pending/complete/failed
+    status          NVARCHAR(20)  DEFAULT 'pending',  -- pending/complete/failed
+    report_summary  NVARCHAR(MAX) NULL
 );
 GO
 
