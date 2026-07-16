@@ -19,6 +19,7 @@ FOUNDRY_ENDPOINT  = os.environ["FOUNDRY_ENDPOINT"]          # https://aifoundry-
 FOUNDRY_API_VER   = os.environ.get("FOUNDRY_API_VERSION", "2025-05-15-preview")
 AGENT_ID          = os.environ["AGENT_ID"]                  # asst_iujfiErrYF9CfqgyB6BqY4Xn
 AGENT_MODEL       = os.environ.get("AGENT_MODEL", "gpt-5-4")
+AGENT_FALLBACK_MODEL = os.environ.get("AGENT_FALLBACK_MODEL", "gpt-4o")
 
 # Timeouts (seconds)
 CONNECT_TIMEOUT   = 10
@@ -73,6 +74,7 @@ class ChatResponse(BaseModel):
     answer: str
     thread_id: str
     tool_calls: list = []
+    model_used: str = ""
 
 # ── Auth helper ───────────────────────────────────────────────────────────────
 async def get_foundry_token() -> str:
@@ -190,6 +192,97 @@ async def dispatch_tool(tool_name: str, tool_args: dict, tool_client: httpx.Asyn
     except Exception as e:
         return json.dumps({"error": f"Tool {tool_name} failed: {str(e)}"})
 
+# ── Create run + poll for completion ─────────────────────────────────────────
+async def run_once(model, thread_id, foundry_client, tool_client, base_url, tool_calls_log):
+    """
+    Create a run on the given thread with the given model, poll it to completion,
+    dispatching any tool calls along the way. Returns (status, run) where status
+    is one of "completed", "failed", "cancelled", "expired", or "timeout".
+    Raises HTTPException only for actual connection/timeout errors on the
+    httpx calls themselves — run-level failures are returned, not raised.
+    """
+    try:
+        r = await foundry_client.post(
+            f"{base_url}/threads/{thread_id}/runs?api-version={FOUNDRY_API_VER}",
+            json={
+                "assistant_id":          AGENT_ID,
+                "model":                 model,
+                "max_completion_tokens": 16384
+            }
+        )
+        r.raise_for_status()
+        run_id = r.json()["id"]
+    except Exception as e:
+        raise HTTPException(503, detail=f"Failed to start agent run: {str(e)}")
+
+    elapsed = 0.0
+    status = "queued"
+    run = {}
+
+    while elapsed < RUN_POLL_TIMEOUT:
+        await asyncio.sleep(POLL_INTERVAL)
+        elapsed += POLL_INTERVAL
+
+        try:
+            r = await foundry_client.get(
+                f"{base_url}/threads/{thread_id}/runs/{run_id}?api-version={FOUNDRY_API_VER}"
+            )
+            r.raise_for_status()
+            run = r.json()
+            status = run.get("status", "unknown")
+        except httpx.TimeoutException:
+            continue  # transient poll timeout — keep waiting
+        except Exception as e:
+            raise HTTPException(503, detail=f"Lost connection to AI service: {str(e)}")
+
+        if status == "completed":
+            break
+
+        elif status == "requires_action":
+            # ── Tool calls ────────────────────────────────────────────────
+            tool_outputs = []
+            calls = (
+                run.get("required_action", {})
+                   .get("submit_tool_outputs", {})
+                   .get("tool_calls", [])
+            )
+
+            for call in calls:
+                tool_name = call["function"]["name"]
+                try:
+                    tool_args = json.loads(call["function"]["arguments"])
+                except json.JSONDecodeError:
+                    tool_args = {}
+
+                tool_calls_log.append({"tool": tool_name, "args": tool_args, "model": model})
+                result = await dispatch_tool(tool_name, tool_args, tool_client)
+                tool_outputs.append({"tool_call_id": call["id"], "output": result})
+
+            # Cap total tool output size before submitting (Foundry limit ~32KB)
+            total_size = sum(len(o["output"]) for o in tool_outputs)
+            if total_size > 20000:
+                for o in tool_outputs:
+                    if len(o["output"]) > 3000:
+                        o["output"] = o["output"][:3000] + "[TRUNCATED: use specific experiment_id for full detail]"
+
+            # Submit tool outputs
+            try:
+                r = await foundry_client.post(
+                    f"{base_url}/threads/{thread_id}/runs/{run_id}/submit_tool_outputs?api-version={FOUNDRY_API_VER}",
+                    json={"tool_outputs": tool_outputs}
+                )
+                r.raise_for_status()
+            except Exception as e:
+                raise HTTPException(503, detail=f"Failed to submit tool results: {str(e)}")
+
+        elif status in ("failed", "cancelled", "expired"):
+            return status, run
+
+    else:
+        return "timeout", run
+
+    return status, run
+
 # ── Main chat endpoint ────────────────────────────────────────────────────────
 @router.post("/api/ai/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
@@ -247,94 +340,30 @@ async def chat(request: ChatRequest):
         except Exception as e:
             raise HTTPException(503, detail=f"Failed to send message: {str(e)}")
 
-        # ── 3. Create run ─────────────────────────────────────────────────────
-        try:
-            r = await foundry_client.post(
-                f"{base_url}/threads/{thread_id}/runs?api-version={FOUNDRY_API_VER}",
-                json={
-                    "assistant_id":          AGENT_ID,
-                    "model":                 AGENT_MODEL,
-                    "max_completion_tokens": 16384
-                }
+        # ── 3-4. Create run and poll for completion (with one fallback retry) ─
+        status, run = await run_once(AGENT_MODEL, thread_id, foundry_client, tool_client, base_url, tool_calls_log)
+        model_used = AGENT_MODEL
+
+        if (status == "failed"
+                and run.get("last_error", {}).get("code") == "server_error"
+                and AGENT_FALLBACK_MODEL
+                and AGENT_FALLBACK_MODEL != AGENT_MODEL):
+            status, run = await run_once(AGENT_FALLBACK_MODEL, thread_id, foundry_client, tool_client, base_url, tool_calls_log)
+            model_used = AGENT_FALLBACK_MODEL
+
+        if status in ("failed", "cancelled", "expired"):
+            last_error = run.get("last_error", {})
+            code = last_error.get("code", "unknown")
+            message = last_error.get("message", "No details available")
+            raise HTTPException(
+                500,
+                detail=f"Agent run {status} (model={model_used}): {code} — {message}"
             )
-            r.raise_for_status()
-            run_id = r.json()["id"]
-        except Exception as e:
-            raise HTTPException(503, detail=f"Failed to start agent run: {str(e)}")
 
-        # ── 4. Poll for completion ────────────────────────────────────────────
-        elapsed = 0.0
-        status = "queued"
-
-        while elapsed < RUN_POLL_TIMEOUT:
-            await asyncio.sleep(POLL_INTERVAL)
-            elapsed += POLL_INTERVAL
-
-            try:
-                r = await foundry_client.get(
-                    f"{base_url}/threads/{thread_id}/runs/{run_id}?api-version={FOUNDRY_API_VER}"
-                )
-                r.raise_for_status()
-                run = r.json()
-                status = run.get("status", "unknown")
-            except httpx.TimeoutException:
-                continue  # transient poll timeout — keep waiting
-            except Exception as e:
-                raise HTTPException(503, detail=f"Lost connection to AI service: {str(e)}")
-
-            if status == "completed":
-                break
-
-            elif status == "requires_action":
-                # ── Tool calls ────────────────────────────────────────────────
-                tool_outputs = []
-                calls = (
-                    run.get("required_action", {})
-                       .get("submit_tool_outputs", {})
-                       .get("tool_calls", [])
-                )
-
-                for call in calls:
-                    tool_name = call["function"]["name"]
-                    try:
-                        tool_args = json.loads(call["function"]["arguments"])
-                    except json.JSONDecodeError:
-                        tool_args = {}
-
-                    tool_calls_log.append({"tool": tool_name, "args": tool_args})
-                    result = await dispatch_tool(tool_name, tool_args, tool_client)
-                    tool_outputs.append({"tool_call_id": call["id"], "output": result})
-
-                # Cap total tool output size before submitting (Foundry limit ~32KB)
-                total_size = sum(len(o["output"]) for o in tool_outputs)
-                if total_size > 20000:
-                    for o in tool_outputs:
-                        if len(o["output"]) > 3000:
-                            o["output"] = o["output"][:3000] + "[TRUNCATED: use specific experiment_id for full detail]"
-
-                # Submit tool outputs
-                try:
-                    r = await foundry_client.post(
-                        f"{base_url}/threads/{thread_id}/runs/{run_id}/submit_tool_outputs?api-version={FOUNDRY_API_VER}",
-                        json={"tool_outputs": tool_outputs}
-                    )
-                    r.raise_for_status()
-                except Exception as e:
-                    raise HTTPException(503, detail=f"Failed to submit tool results: {str(e)}")
-
-            elif status in ("failed", "cancelled", "expired"):
-                last_error = run.get("last_error", {})
-                code = last_error.get("code", "unknown")
-                message = last_error.get("message", "No details available")
-                raise HTTPException(
-                    500,
-                    detail=f"Agent run {status}: {code} — {message}"
-                )
-
-        else:
+        elif status == "timeout":
             raise HTTPException(
                 504,
-                detail=f"Agent did not complete within {RUN_POLL_TIMEOUT}s. Try a simpler question or break it into steps."
+                detail=f"Agent did not complete within {RUN_POLL_TIMEOUT}s (model={model_used}). Try a simpler question or break it into steps."
             )
 
         # ── 5. Retrieve assistant reply ───────────────────────────────────────
@@ -365,5 +394,6 @@ async def chat(request: ChatRequest):
         return ChatResponse(
             answer=answer,
             thread_id=thread_id,
-            tool_calls=tool_calls_log
+            tool_calls=tool_calls_log,
+            model_used=model_used
         )
