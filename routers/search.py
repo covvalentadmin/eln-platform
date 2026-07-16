@@ -44,23 +44,23 @@ def search(
                 )
             ],
             select=[
-                "id", "exp_number_full", "chunk_type",
+                "chunk_id", "exp_number_full", "chunk_type",
                 "experiment_id", "project_code",
-                "title", "author", "content"
+                "experiment_title", "scientist", "text"
             ]
         )
 
         output = []
         for r in results:
             output.append({
-                "id":              r.get("id"),
+                "id":              r.get("chunk_id"),
                 "exp_number_full": r.get("exp_number_full"),
                 "chunk_type":      r.get("chunk_type"),
                 "experiment_id":   r.get("experiment_id"),
                 "project_code":    r.get("project_code"),
-                "title":           r.get("title"),
-                "author":          r.get("author"),
-                "content":         r.get("content"),
+                "title":           r.get("experiment_title"),
+                "author":          r.get("scientist"),
+                "content":         r.get("text"),
                 "reranker_score":  r.get("@search.reranker_score"),
             })
 
