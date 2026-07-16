@@ -7,7 +7,7 @@ import os
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 from azure.search.documents import SearchClient
-from azure.search.documents.models import VectorizedQuery
+from azure.search.documents.models import VectorizableTextQuery
 from azure.identity import ManagedIdentityCredential
 
 router = APIRouter()
@@ -36,7 +36,7 @@ def search(
             semantic_configuration_name="eln-semantic",
             query_caption="extractive",
             vector_queries=[
-                VectorizedQuery(
+                VectorizableTextQuery(
                     text=q,
                     k_nearest_neighbors=50,
                     fields="embedding",
@@ -46,8 +46,7 @@ def search(
             select=[
                 "id", "exp_number_full", "chunk_type",
                 "experiment_id", "project_code",
-                "title", "author", "content",
-                "@search.reranker_score"
+                "title", "author", "content"
             ]
         )
 
