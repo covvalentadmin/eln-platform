@@ -293,64 +293,70 @@ export default function AIChatPanel({ onClose }) {
   };
 
   return (
-    <div style={{ position: 'fixed', bottom: '28px', right: '28px', width: '430px', height: '610px', background: C.white, border: `2px solid ${C.cyan}`, borderRadius: '12px', boxShadow: '0 24px 64px rgba(0,11,54,0.2)', display: 'flex', flexDirection: 'column', zIndex: 9999, fontFamily: FONT }}>
+    <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, width: '100vw', height: '100vh', background: C.white, display: 'flex', flexDirection: 'column', zIndex: 9999, fontFamily: FONT }}>
 
       {/* Header */}
-      <div style={{ padding: '14px 18px', background: C.navy, borderRadius: '10px 10px 0 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+      <div style={{ padding: '18px 28px', background: C.navy, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
         <div>
           <div style={{ color: C.white, fontWeight: 800, fontSize: '14px', letterSpacing: '0.3px' }}>⚗ Ask AI</div>
           <div style={{ color: C.cyan, fontSize: '11px', marginTop: '1px', fontWeight: 500, opacity: 0.8 }}>ELN Intelligence Agent</div>
         </div>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
           <button onClick={handleNewSession} style={{ background: 'rgba(157,209,241,0.15)', border: `1px solid rgba(157,209,241,0.3)`, color: C.cyan, borderRadius: '6px', padding: '5px 12px', fontSize: '12px', cursor: 'pointer', fontWeight: 600, fontFamily: FONT }}>New session</button>
-          <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: C.cyan, fontSize: '20px', cursor: 'pointer', lineHeight: 1, padding: '2px 4px' }}>×</button>
+          <button onClick={onClose} aria-label="Close AI chat" style={{ background: 'rgba(157,209,241,0.15)', border: `1px solid rgba(157,209,241,0.3)`, color: C.cyan, borderRadius: '6px', padding: '5px 14px', fontSize: '12px', cursor: 'pointer', fontWeight: 600, fontFamily: FONT, display: 'flex', alignItems: 'center', gap: '6px' }}>Close <span style={{ fontSize: '16px', lineHeight: 1 }}>×</span></button>
         </div>
       </div>
 
       {/* Messages */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '16px 16px 8px', scrollbarWidth: 'thin', scrollbarColor: `${C.cyan} transparent` }}>
-        {messages.length === 0 && (
-          <div style={{ color: C.textSub, fontSize: '13px', textAlign: 'center', marginTop: '40px', lineHeight: '1.9', fontFamily: FONT }}>
-            Ask about experiments, synthesis routes, projects…
-            <br /><span style={{ fontSize: '12px', color: C.cyan, fontStyle: 'italic' }}>"What's the best tryptophan synthesis experiment?"</span>
-          </div>
-        )}
-        {messages.map((msg, i) => (
-          <MessageBubble key={i} msg={msg} onRetry={
-            msg.role === 'error' && lastUserMessage
-              ? () => { setMessages(prev => prev.slice(0,-1)); sendMessage(lastUserMessage); }
-              : null
-          } />
-        ))}
-        {isLoading && <TypingIndicator stage={loadingStage} />}
-        <div ref={bottomRef} />
+      <div style={{ flex: 1, overflowY: 'auto', padding: '24px 24px 8px', scrollbarWidth: 'thin', scrollbarColor: `${C.cyan} transparent` }}>
+        <div style={{ maxWidth: '860px', margin: '0 auto' }}>
+          {messages.length === 0 && (
+            <div style={{ color: C.textSub, fontSize: '14px', textAlign: 'center', marginTop: '120px', lineHeight: '1.9', fontFamily: FONT }}>
+              Ask about experiments, synthesis routes, projects…
+              <br /><span style={{ fontSize: '13px', color: C.cyan, fontStyle: 'italic' }}>"What's the best tryptophan synthesis experiment?"</span>
+            </div>
+          )}
+          {messages.map((msg, i) => (
+            <MessageBubble key={i} msg={msg} onRetry={
+              msg.role === 'error' && lastUserMessage
+                ? () => { setMessages(prev => prev.slice(0,-1)); sendMessage(lastUserMessage); }
+                : null
+            } />
+          ))}
+          {isLoading && <TypingIndicator stage={loadingStage} />}
+          <div ref={bottomRef} />
+        </div>
       </div>
 
       {/* Input */}
-      <div style={{ padding: '12px 16px 14px', borderTop: `1.5px solid ${C.ice}`, flexShrink: 0, background: C.white, borderRadius: '0 0 10px 10px' }}>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end', background: C.ice, border: `1.5px solid ${C.cyan}`, borderRadius: '8px', padding: '8px 12px' }}>
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(input); } }}
-            placeholder="Ask about experiments, synthesis routes, projects…"
-            disabled={isLoading}
-            rows={1}
-            style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: C.blue, fontSize: '13px', resize: 'none', lineHeight: '1.5', maxHeight: '80px', overflowY: 'auto', fontFamily: FONT, opacity: isLoading ? 0.5 : 1 }}
-          />
-          <button
-            onClick={handleDirectExport}
-            title="Export as CSV (bypasses AI — downloads full dataset)"
-            style={{ background: 'transparent', border: `1.5px solid ${C.cyan}`, borderRadius: '6px', color: C.textDim, width: '34px', height: '34px', cursor: 'pointer', fontSize: '13px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontFamily: FONT }}
-          >↓</button>
-          <button
-            onClick={() => sendMessage(input)}
-            disabled={!input.trim() || isLoading}
-            style={{ background: input.trim() && !isLoading ? C.navy : C.ice, border: `1.5px solid ${input.trim() && !isLoading ? C.navy : C.cyan}`, borderRadius: '6px', color: input.trim() && !isLoading ? C.white : C.textSub, width: '34px', height: '34px', cursor: input.trim() && !isLoading ? 'pointer' : 'default', fontSize: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.15s', fontFamily: FONT }}
-          >↑</button>
+      <div style={{ padding: '16px 24px 24px', borderTop: `1.5px solid ${C.ice}`, flexShrink: 0, background: C.white }}>
+        <div style={{ maxWidth: '860px', margin: '0 auto' }}>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end', background: C.ice, border: `1.5px solid ${C.cyan}`, borderRadius: '8px', padding: '8px 12px' }}>
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(input); } }}
+              placeholder="Ask about experiments, synthesis routes, projects…"
+              disabled={isLoading}
+              rows={1}
+              style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: C.blue, fontSize: '13px', resize: 'none', lineHeight: '1.5', maxHeight: '80px', overflowY: 'auto', fontFamily: FONT, opacity: isLoading ? 0.5 : 1 }}
+            />
+            <button
+              onClick={handleDirectExport}
+              title="Export as CSV (bypasses AI — downloads full dataset)"
+              aria-label="Export as CSV"
+              style={{ background: 'transparent', border: `1.5px solid ${C.cyan}`, borderRadius: '6px', color: C.textDim, width: '34px', height: '34px', cursor: 'pointer', fontSize: '13px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontFamily: FONT }}
+            >↓</button>
+            <button
+              onClick={() => sendMessage(input)}
+              disabled={!input.trim() || isLoading}
+              aria-label="Send message"
+              style={{ background: input.trim() && !isLoading ? C.navy : C.ice, border: `1.5px solid ${input.trim() && !isLoading ? C.navy : C.cyan}`, borderRadius: '6px', color: input.trim() && !isLoading ? C.white : C.textSub, width: '34px', height: '34px', cursor: input.trim() && !isLoading ? 'pointer' : 'default', fontSize: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.15s', fontFamily: FONT }}
+            >↑</button>
+          </div>
+          <div style={{ color: C.textSub, fontSize: '11px', marginTop: '6px', textAlign: 'center', fontFamily: FONT }}>↑ Ask AI · ↓ CSV downloads full dataset directly</div>
         </div>
-        <div style={{ color: C.textSub, fontSize: '11px', marginTop: '6px', textAlign: 'center', fontFamily: FONT }}>↑ Ask AI · ↓ CSV downloads full dataset directly</div>
       </div>
     </div>
   );
