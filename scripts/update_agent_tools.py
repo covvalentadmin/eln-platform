@@ -49,9 +49,18 @@ NEW_TOOLS = [
                     },
                     "author": {
                         "type": "string"
+                    },
+                    "exp_number_full": {
+                        "type": "string",
+                        "description": "Optional. Set this when the note concerns one specific experiment, e.g. R&D/P013E00/2606/375. Leave unset for project-level or strategic notes."
+                    },
+                    "note_type": {
+                        "type": "string",
+                        "enum": ["decision", "data_point"],
+                        "description": "'decision' for strategic/process context (route abandoned, project on hold, key learning). 'data_point' for a specific reported number or correction (a yield, purity, or other measured value not yet confirmed in ELN) — set this whenever exp_number_full is also set."
                     }
                 },
-                "required": ["project_code", "note_text", "author"]
+                "required": ["project_code", "note_text"]
             },
             "strict": False
         }

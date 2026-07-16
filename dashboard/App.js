@@ -998,7 +998,7 @@ export default function App() {
         </button>
       )}
 
-      {showChat && <AIChatPanel onClose={() => setShowChat(false)} />}
+      {showChat && <AIChatPanel onClose={() => setShowChat(false)} user={user} />}
     </div>
   );
 }

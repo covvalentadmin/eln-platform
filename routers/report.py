@@ -43,6 +43,8 @@ class NoteRequest(BaseModel):
     note_text: str
     author: str
     captured_from: str = "manual"
+    exp_number_full: Optional[str] = None
+    note_type: str = "decision"
 
 def _extract_summary(analysis_text: str, max_chars: int = 800) -> str:
     """
@@ -598,16 +600,22 @@ def create_note(req: NoteRequest):
     conn = _get_conn()
     cur  = conn.cursor()
     cur.execute(
-        "INSERT INTO eln_project_notes (project_code, note_text, captured_from, author) "
-        "OUTPUT INSERTED.note_id, INSERTED.created_date VALUES (?,?,?,?)",
-        req.project_code, req.note_text, req.captured_from, req.author
+        "INSERT INTO eln_project_notes (project_code, note_text, captured_from, author, exp_number_full, note_type) "
+        "OUTPUT INSERTED.note_id, INSERTED.created_date VALUES (?,?,?,?,?,?)",
+        req.project_code, req.note_text, req.captured_from, req.author, req.exp_number_full, req.note_type
     )
     row = cur.fetchone()
     note_id      = row[0]
     created_date = _serialize(row[1])
     conn.commit()
     conn.close()
-    return {"note_id": note_id, "project_code": req.project_code, "created_date": created_date}
+    return {
+        "note_id": note_id,
+        "project_code": req.project_code,
+        "created_date": created_date,
+        "exp_number_full": req.exp_number_full,
+        "note_type": req.note_type,
+    }
 
 
 @router.get("/api/ai/notes/{project_code}")
@@ -616,7 +624,8 @@ def get_notes(project_code: str):
     conn = _get_conn()
     cur  = conn.cursor()
     cur.execute(
-        "SELECT note_id, note_text, author, created_date, captured_from "
+        "SELECT note_id, note_text, author, created_date, captured_from, "
+        "exp_number_full, note_type, verified "
         "FROM eln_project_notes WHERE project_code = ? AND is_deleted = 0 "
         "ORDER BY created_date DESC",
         project_code

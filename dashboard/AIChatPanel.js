@@ -160,7 +160,7 @@ function MessageBubble({ msg, onRetry }) {
   );
 }
 
-export default function AIChatPanel({ onClose }) {
+export default function AIChatPanel({ onClose, user }) {
   const SESSION_KEY = 'eln_chat_messages';
   const THREAD_KEY  = 'eln_chat_thread_id';
 
@@ -200,7 +200,11 @@ export default function AIChatPanel({ onClose }) {
       const res = await fetch(`${API_BASE}/api/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userText, thread_id: threadId || null }),
+        body: JSON.stringify({
+          message: userText,
+          thread_id: threadId || null,
+          user_email: user?.userDetails || null
+        }),
         signal: controller.signal
       });
 

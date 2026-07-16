@@ -69,6 +69,7 @@ TOOLS = [
 class ChatRequest(BaseModel):
     message: str
     thread_id: Optional[str] = None
+    user_email: Optional[str] = None
 
 class ChatResponse(BaseModel):
     answer: str
@@ -103,7 +104,7 @@ def truncate_tool_output(raw: str, tool_name: str) -> str:
     return truncated + f'\n[TRUNCATED: full {tool_name} response exceeded {TOOL_OUTPUT_MAX_CHARS} chars. Use specific experiment_id or exp_number_full to fetch individual records.]'
 
 # ── Tool dispatcher ───────────────────────────────────────────────────────────
-async def dispatch_tool(tool_name: str, tool_args: dict, tool_client: httpx.AsyncClient) -> str:
+async def dispatch_tool(tool_name: str, tool_args: dict, tool_client: httpx.AsyncClient, user_email: str = "unknown") -> str:
     """Execute a tool call and return the result as a string."""
     try:
         if tool_name == "fetch_experiment":
@@ -143,13 +144,16 @@ async def dispatch_tool(tool_name: str, tool_args: dict, tool_client: httpx.Asyn
         elif tool_name == "update_project_notes":
             project_code = tool_args.get("project_code", "")
             note_text    = tool_args.get("note_text", "")
-            author       = tool_args.get("author", "agent")
+            author       = user_email if user_email and user_email != "unknown" else tool_args.get("author", "agent")
+            exp_number_full = tool_args.get("exp_number_full")
+            note_type       = tool_args.get("note_type", "decision")
             if not project_code or not note_text:
                 return json.dumps({"error": "update_project_notes requires project_code and note_text"})
             response = await tool_client.post(
                 f"{API_BASE}/api/ai/notes",
                 json={"project_code": project_code, "note_text": note_text,
-                      "captured_from": "chat", "author": author},
+                      "captured_from": "chat", "author": author,
+                      "exp_number_full": exp_number_full, "note_type": note_type},
                 timeout=TOOL_CALL_TIMEOUT
             )
             response.raise_for_status()
@@ -193,7 +197,7 @@ async def dispatch_tool(tool_name: str, tool_args: dict, tool_client: httpx.Asyn
         return json.dumps({"error": f"Tool {tool_name} failed: {str(e)}"})
 
 # ── Create run + poll for completion ─────────────────────────────────────────
-async def run_once(model, thread_id, foundry_client, tool_client, base_url, tool_calls_log):
+async def run_once(model, thread_id, foundry_client, tool_client, base_url, tool_calls_log, user_email: str = "unknown"):
     """
     Create a run on the given thread with the given model, poll it to completion,
     dispatching any tool calls along the way. Returns (status, run) where status
@@ -255,7 +259,7 @@ async def run_once(model, thread_id, foundry_client, tool_client, base_url, tool
                     tool_args = {}
 
                 tool_calls_log.append({"tool": tool_name, "args": tool_args, "model": model})
-                result = await dispatch_tool(tool_name, tool_args, tool_client)
+                result = await dispatch_tool(tool_name, tool_args, tool_client, user_email)
                 tool_outputs.append({"tool_call_id": call["id"], "output": result})
 
             # Cap total tool output size before submitting (Foundry limit ~32KB)
@@ -340,15 +344,17 @@ async def chat(request: ChatRequest):
         except Exception as e:
             raise HTTPException(503, detail=f"Failed to send message: {str(e)}")
 
+        user_email = request.user_email or "unknown"
+
         # ── 3-4. Create run and poll for completion (with one fallback retry) ─
-        status, run = await run_once(AGENT_MODEL, thread_id, foundry_client, tool_client, base_url, tool_calls_log)
+        status, run = await run_once(AGENT_MODEL, thread_id, foundry_client, tool_client, base_url, tool_calls_log, user_email)
         model_used = AGENT_MODEL
 
         if (status == "failed"
                 and run.get("last_error", {}).get("code") == "server_error"
                 and AGENT_FALLBACK_MODEL
                 and AGENT_FALLBACK_MODEL != AGENT_MODEL):
-            status, run = await run_once(AGENT_FALLBACK_MODEL, thread_id, foundry_client, tool_client, base_url, tool_calls_log)
+            status, run = await run_once(AGENT_FALLBACK_MODEL, thread_id, foundry_client, tool_client, base_url, tool_calls_log, user_email)
             model_used = AGENT_FALLBACK_MODEL
 
         if status in ("failed", "cancelled", "expired"):
