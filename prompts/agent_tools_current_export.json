@@ -1,0 +1,186 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "fetch_experiment",
+      "description": "Structured retrieval from ELN database. Accepts any combination of parameters. Pass project_code alone to get project metadata and experiment list. Pass experiment_id or exp_number_full for full experiment detail. Pass days to get recent experiments. Pass chemistry for reaction class search. Pass product_name for fuzzy name search. Pass cas_number for CAS lookup. Empty body returns all projects.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "experiment_id": {
+            "type": "integer",
+            "description": "Numeric experiment ID for full detail retrieval"
+          },
+          "exp_number_full": {
+            "type": "string",
+            "description": "Experiment number e.g. R&D/P112P00/2511/24"
+          },
+          "project_code": {
+            "type": "string",
+            "description": "Project code e.g. P013E00. Use alone for project summary, combine with days or chemistry for filtered results."
+          },
+          "days": {
+            "type": "integer",
+            "description": "Return experiments created in the last N days. Use for any recency or date-based query. ALWAYS use this instead of search_experiments for temporal queries. Combine with project_code to scope to one project."
+          },
+          "cas_number": {
+            "type": "string",
+            "description": "CAS number to find all projects and experiments for that compound"
+          },
+          "product_name": {
+            "type": "string",
+            "description": "Fuzzy search across project titles, generic names, and product names"
+          },
+          "chemistry": {
+            "type": "string",
+            "description": "Reaction class or reagent keyword — searches objective, conclusion, procedure steps, and material names across all experiments"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of results to return (default 50)"
+          }
+        },
+        "required": []
+      },
+      "strict": false
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "search_experiments",
+      "description": "Semantic + vector search over indexed ELN experiment corpus. Use ONLY for conceptual or exploratory questions: Have we tried X?, What approaches for Y?, Find experiments similar to Z?. NEVER use for date-based, recency, or time-range queries — use fetch_experiment with days for those. Reranker scores above 2.3 = strong hit.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "description": "Natural language search query"
+          },
+          "top": {
+            "type": "integer",
+            "description": "Number of results 1-20"
+          },
+          "chunk_type": {
+            "type": "string",
+            "enum": [
+              "overview",
+              "procedure",
+              "results"
+            ]
+          }
+        },
+        "required": [
+          "q"
+        ]
+      },
+      "strict": false
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "search_literature",
+      "description": "External chemistry literature search via PubChem and CrossRef. Use for new molecules/CAS numbers not in internal corpus, synthesis routes from literature, or external validation. Always cite DOI or PubChem CID for every claim.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "description": "Chemistry search query"
+          },
+          "top": {
+            "type": "integer",
+            "description": "Results per source"
+          },
+          "sources": {
+            "type": "string",
+            "description": "pubchem,crossref"
+          }
+        },
+        "required": [
+          "q"
+        ]
+      },
+      "strict": false
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "update_project_notes",
+      "description": "Save a project insight or decision to persistent memory. Call when user shares context not in ELN: final process decisions, abandoned routes, key learnings, next step plans.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "project_code": {
+            "type": "string"
+          },
+          "note_text": {
+            "type": "string",
+            "description": "The insight to capture, written as a clear factual statement"
+          },
+          "author": {
+            "type": "string"
+          },
+          "exp_number_full": {
+            "type": "string",
+            "description": "Optional. Set this when the note concerns one specific experiment, e.g. R&D/P013E00/2606/375. Leave unset for project-level or strategic notes."
+          },
+          "note_type": {
+            "type": "string",
+            "enum": [
+              "decision",
+              "data_point"
+            ],
+            "description": "'decision' for strategic/process context (route abandoned, project on hold, key learning). 'data_point' for a specific reported number or correction (a yield, purity, or other measured value not yet confirmed in ELN) — set this whenever exp_number_full is also set."
+          }
+        },
+        "required": [
+          "project_code",
+          "note_text"
+        ]
+      },
+      "strict": false
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_project_notes",
+      "description": "Retrieve all saved project notes and context for a project. Call at the start of any project query to check for captured insights.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "project_code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_code"
+        ]
+      },
+      "strict": false
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "fetch_project_reports",
+      "description": "Retrieve previously generated analysis reports for a project. Returns report metadata and a concise summary of each report's findings. Call this FIRST whenever answering any project-level question so that prior analysis is used as context rather than repeating retrieval already covered in an existing report.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "project_code": {
+            "type": "string",
+            "description": "The project code, e.g. P112P00 or P100P02."
+          }
+        },
+        "required": [
+          "project_code"
+        ]
+      },
+      "strict": false
+    }
+  }
+]
