@@ -449,13 +449,22 @@ from fastapi.responses import RedirectResponse
 _STORAGE_ACCOUNT  = "stelncoovalent"
 _REPORTS_CONTAINER = "eln-reports"
 
+_REPORT_TABLE_MAP = {
+    "project": "eln_project_reports",
+    "meeting": "eln_meeting_reports",
+}
+
 @router.get("/api/ai/report/download/{report_id}")
-def download_report(report_id: int):
+def download_report(report_id: int, source: str = "project"):
     """Generate a 1-hour SAS URL for a report blob and redirect."""
+    table = _REPORT_TABLE_MAP.get(source)
+    if table is None:
+        raise HTTPException(status_code=400, detail=f"Invalid source '{source}'")
+
     conn = _get_conn()
     try:
         row = conn.execute(
-            "SELECT blob_url FROM eln_project_reports WHERE report_id=?",
+            f"SELECT blob_url FROM {table} WHERE report_id=?",
             (report_id,)
         ).fetchone()
     finally:

@@ -919,7 +919,7 @@ function MeetingCopilotView({ user }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ transcript: finalTranscript, project_code: projectCode || null, author: user?.userDetails || '' }),
       });
-      setReportUrl(`${API_BASE}/api/ai/report/download/${data.report_id}`);
+      setReportUrl(`${API_BASE}/api/ai/report/download/${data.report_id}?source=meeting`);
       setReportMeta(data);
       setNoteItems((data.candidate_notes || []).map(n => ({
         included:         true,
