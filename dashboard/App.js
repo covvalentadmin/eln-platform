@@ -746,9 +746,10 @@ function ReportsView() {
 }
 
 // ── Meeting Copilot view ──────────────────────────────────────────────────────
-function NoteCandidateCard({ item, onToggle, onTextChange }) {
+function NoteCandidateCard({ item, onToggle, onTextChange, onProjectCodeChange }) {
   const [focused, setFocused] = useState(false);
   const edited = item.note_text !== item.originalText;
+  const unresolved = item.needsProjectCode && !(item.project_code && item.project_code.trim());
 
   return (
     <div
@@ -785,8 +786,24 @@ function NoteCandidateCard({ item, onToggle, onTextChange }) {
             {item.exp_number_full && (
               <span style={{ fontSize: '11px', color: C.textSub, fontFamily: 'monospace' }}>{item.exp_number_full}</span>
             )}
-            {item.project_code && (
-              <span style={{ fontSize: '11px', color: C.textSub, fontFamily: FONT }}>{item.project_code}</span>
+            {item.needsProjectCode ? (
+              <input
+                type="text"
+                value={item.project_code || ''}
+                onChange={e => onProjectCodeChange(e.target.value.toUpperCase())}
+                placeholder="Project code needed"
+                style={{
+                  fontSize: '11px', fontFamily: 'monospace', fontWeight: 600,
+                  color: unresolved ? C.danger : C.blue,
+                  background: unresolved ? '#fdf2f2' : C.ice,
+                  border: `1.2px solid ${unresolved ? '#e57373' : C.border}`,
+                  borderRadius: '4px', padding: '2px 6px', outline: 'none', width: '150px',
+                }}
+              />
+            ) : (
+              item.project_code && (
+                <span style={{ fontSize: '11px', color: C.textSub, fontFamily: FONT }}>{item.project_code}</span>
+              )
             )}
             {edited && (
               <span style={{ fontSize: '10px', color: C.blue, fontWeight: 700, background: C.ice, padding: '1px 6px', borderRadius: '8px', fontFamily: FONT }}>Edited</span>
@@ -807,6 +824,11 @@ function NoteCandidateCard({ item, onToggle, onTextChange }) {
               resize: 'none', overflow: 'hidden',
             }}
           />
+          {item.included && unresolved && (
+            <div style={{ fontSize: '10px', color: C.danger, marginTop: '2px', fontFamily: FONT }}>
+              Add a project code to include this note when saving.
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -906,6 +928,7 @@ function MeetingCopilotView({ user }) {
         originalText:     n.note_text || '',
         exp_number_full:  n.exp_number_full || null,
         project_code:     n.project_code || null,
+        needsProjectCode: !n.project_code,
         source_report_id: n.source_report_id ?? data.report_id,
       })));
       setEmailSubject(data.email_draft?.subject || '');
@@ -927,8 +950,14 @@ function MeetingCopilotView({ user }) {
     setNoteItems(items => items.map((it, i) => i === idx ? { ...it, note_text: text } : it));
   };
 
+  const updateNoteProjectCode = (idx, code) => {
+    setNoteItems(items => items.map((it, i) => i === idx ? { ...it, project_code: code } : it));
+  };
+
+  const isSavable = (n) => n.included && n.project_code && n.project_code.trim();
+
   const saveNotesToMemory = async () => {
-    const toSave = noteItems.filter(n => n.included);
+    const toSave = noteItems.filter(isSavable);
     if (!toSave.length) return;
     setSavingNotes(true); setSaveResult(null);
     try {
@@ -1108,21 +1137,22 @@ function MeetingCopilotView({ user }) {
                     item={item}
                     onToggle={() => toggleNoteIncluded(idx)}
                     onTextChange={(text) => updateNoteText(idx, text)}
+                    onProjectCodeChange={(code) => updateNoteProjectCode(idx, code)}
                   />
                 ))}
                 <button
                   onClick={saveNotesToMemory}
-                  disabled={savingNotes || !noteItems.some(n => n.included)}
+                  disabled={savingNotes || !noteItems.some(isSavable)}
                   style={{
                     background: savingNotes ? C.ice : C.navy,
                     color: savingNotes ? C.textDim : C.white,
                     border: 'none', borderRadius: '8px', padding: '10px 18px',
                     fontFamily: FONT, fontSize: '13px', fontWeight: 700,
-                    cursor: savingNotes || !noteItems.some(n => n.included) ? 'default' : 'pointer',
+                    cursor: savingNotes || !noteItems.some(isSavable) ? 'default' : 'pointer',
                     marginTop: '4px',
                   }}
                 >
-                  {savingNotes ? '⏳ Saving…' : `Save ${noteItems.filter(n => n.included).length} to Project Memory`}
+                  {savingNotes ? '⏳ Saving…' : `Save ${noteItems.filter(isSavable).length} to Project Memory`}
                 </button>
                 {saveResult && (
                   <div style={{ marginTop: '10px', fontFamily: FONT, fontSize: '12px', color: saveResult.ok ? C.blue : C.danger }}>

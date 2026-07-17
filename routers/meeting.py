@@ -9,8 +9,10 @@ import os
 import io
 import re
 import json
+import time
 import uuid
 import asyncio
+import logging
 import httpx
 import pyodbc
 from datetime import datetime, date
@@ -19,6 +21,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 AOAI_ENDPOINT    = os.environ.get("AOAI_ENDPOINT", "https://aoai-eln-covvalent-2e2ec.openai.azure.com")
@@ -61,6 +64,28 @@ def _clean(rows):
 def _rows_to_dicts(cur):
     cols = [c[0] for c in cur.description]
     return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+# ── Project directory (product-name → project_code resolution) ──────────────
+def _get_project_directory(conn) -> list:
+    """Returns [{project_code, product_name, generic_name, cas_number}, ...]
+    for every project, for product-name-to-project_code resolution."""
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT project_code, title AS product_name, generic_name, cas_number
+        FROM eln_projects
+        ORDER BY project_code
+    """)
+    return _clean(_rows_to_dicts(cur))
+
+_directory_cache = {"data": None, "fetched_at": 0}
+_DIRECTORY_TTL_SECONDS = 600  # 10 minutes
+
+def get_project_directory_cached(conn) -> list:
+    now = time.time()
+    if _directory_cache["data"] is None or (now - _directory_cache["fetched_at"]) > _DIRECTORY_TTL_SECONDS:
+        _directory_cache["data"] = _get_project_directory(conn)
+        _directory_cache["fetched_at"] = now
+    return _directory_cache["data"]
 
 # ── Speech key via managed identity ──────────────────────────────────────────
 def _get_speech_key() -> str:
@@ -363,9 +388,24 @@ note_text must be the FULL, complete statement with real context — do not
 truncate to a fake one-liner. Do not invent items not grounded in the
 transcript. If nothing qualifies, return an empty array.
 
+Resolving project codes: A PROJECT DIRECTORY appears before the transcript,
+listing every project_code alongside its product name, generic name, and CAS
+number. For every candidate note, resolve project_code by matching whatever
+product is actually being discussed in that part of the transcript against the
+directory — including informal references ("the sulfonation project",
+"tryptophan work"). Different candidates in the same meeting may belong to
+different projects if more than one product was discussed — resolve each one
+independently, do not apply one project_code to all candidates by default. If
+no directory entry matches with reasonable confidence, set project_code to
+null. Do not guess a project_code from a vague or ambiguous reference.
+
 ## EMAIL_DRAFT
 A JSON object (in a fenced ```json block): {"subject": "...", "body": "..."}
 - subject: "Meeting Summary — <topic/project(s)> — <date>"
+  Use the PROJECT DIRECTORY the same way to name every project actually
+  discussed in the subject line (e.g. "Meeting Summary — O031C00 / H000E02 —
+  <date>"), not just the project_code the request was filed under, since a
+  meeting may cover more than one product.
 - body:
   1. One short paragraph (1-3 sentences) framing what was discussed.
   2. "Decisions & Next Steps:" — numbered list. Each item states the
@@ -413,10 +453,21 @@ async def generate_meeting_report(req: MeetingRequest):
     if not req.transcript.strip():
         raise HTTPException(400, detail="Transcript is empty.")
 
-    gpt_output = await _call_gpt(
-        MEETING_SYSTEM,
-        f"MEETING TRANSCRIPT:\n\n{req.transcript[:8000]}"
+    conn = _get_conn()
+
+    directory = get_project_directory_cached(conn)
+    logger.info(f"Loaded {len(directory)} projects for resolution")
+
+    directory_json = json.dumps(directory, ensure_ascii=False)
+    user_content = (
+        "PROJECT DIRECTORY (for resolving product names mentioned in the transcript to "
+        "their project_code — match on product name, generic name, or CAS number, even "
+        "if referenced informally):\n"
+        f"{directory_json}\n\n"
+        f"TRANSCRIPT:\n\n{req.transcript[:8000]}"
     )
+
+    gpt_output = await _call_gpt(MEETING_SYSTEM, user_content)
 
     sections       = _parse_sections(gpt_output)
     topic          = _extract_topic(gpt_output)
@@ -455,8 +506,7 @@ async def generate_meeting_report(req: MeetingRequest):
     )
     blob_url = await _upload_blob(docx_bytes, blob_path)
 
-    conn = _get_conn()
-    cur  = conn.cursor()
+    cur = conn.cursor()
     cur.execute(
         "INSERT INTO eln_meeting_reports "
         "(project_code, topic, blob_url, transcript, author, status) "
@@ -471,6 +521,9 @@ async def generate_meeting_report(req: MeetingRequest):
     conn.close()
 
     for item in candidate_notes:
+        # Priority: (1) model's directory-resolved project_code, (2) the
+        # meeting's own project_code param if the model returned null,
+        # (3) otherwise stays null.
         if not item.get("project_code"):
             item["project_code"] = req.project_code
         item["source_report_id"] = report_id
