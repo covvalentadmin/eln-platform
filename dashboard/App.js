@@ -746,6 +746,73 @@ function ReportsView() {
 }
 
 // ── Meeting Copilot view ──────────────────────────────────────────────────────
+function NoteCandidateCard({ item, onToggle, onTextChange }) {
+  const [focused, setFocused] = useState(false);
+  const edited = item.note_text !== item.originalText;
+
+  return (
+    <div
+      style={{
+        background: C.white,
+        border: `1.5px solid ${focused ? C.blue : C.border}`,
+        borderRadius: '8px',
+        padding: '12px 14px',
+        marginBottom: '10px',
+        opacity: item.included ? 1 : 0.55,
+        transition: 'border-color 0.15s, opacity 0.15s',
+      }}
+      onMouseEnter={e => { if (!focused) e.currentTarget.style.borderColor = C.cyan; }}
+      onMouseLeave={e => { if (!focused) e.currentTarget.style.borderColor = C.border; }}
+    >
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+        <input
+          type="checkbox"
+          checked={item.included}
+          onChange={onToggle}
+          style={{ marginTop: '3px', width: '16px', height: '16px', cursor: 'pointer', accentColor: C.navy, flexShrink: 0 }}
+        />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', flexWrap: 'wrap' }}>
+            <span style={{
+              background: item.note_type === 'data_point' ? '#fff4e5' : C.ice,
+              color: item.note_type === 'data_point' ? '#8a5a00' : C.blue,
+              fontSize: '10px', fontWeight: 700, letterSpacing: '0.5px',
+              padding: '2px 8px', borderRadius: '10px', textTransform: 'uppercase',
+              fontFamily: FONT,
+            }}>
+              {item.note_type === 'data_point' ? 'Data Point' : 'Decision'}
+            </span>
+            {item.exp_number_full && (
+              <span style={{ fontSize: '11px', color: C.textSub, fontFamily: 'monospace' }}>{item.exp_number_full}</span>
+            )}
+            {item.project_code && (
+              <span style={{ fontSize: '11px', color: C.textSub, fontFamily: FONT }}>{item.project_code}</span>
+            )}
+            {edited && (
+              <span style={{ fontSize: '10px', color: C.blue, fontWeight: 700, background: C.ice, padding: '1px 6px', borderRadius: '8px', fontFamily: FONT }}>Edited</span>
+            )}
+          </div>
+          <textarea
+            value={item.note_text}
+            onChange={e => onTextChange(e.target.value)}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            onInput={e => { e.target.style.height = 'auto'; e.target.style.height = `${e.target.scrollHeight}px`; }}
+            rows={2}
+            style={{
+              width: '100%', boxSizing: 'border-box', background: 'transparent',
+              border: 'none', outline: focused ? `1.5px solid ${C.cyan}` : 'none',
+              borderRadius: '4px', padding: '4px',
+              color: C.blue, fontFamily: FONT, fontSize: '13px', lineHeight: '1.6',
+              resize: 'none', overflow: 'hidden',
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MeetingCopilotView({ user }) {
   const [isRecording, setIsRecording]         = useState(false);
   const [transcript, setTranscript]           = useState('');
@@ -756,6 +823,12 @@ function MeetingCopilotView({ user }) {
   const [reportUrl, setReportUrl]             = useState(null);
   const [reportMeta, setReportMeta]           = useState(null);
   const [error, setError]                     = useState(null);
+  const [noteItems, setNoteItems]             = useState([]);
+  const [emailSubject, setEmailSubject]       = useState('');
+  const [emailBody, setEmailBody]             = useState('');
+  const [savingNotes, setSavingNotes]         = useState(false);
+  const [saveResult, setSaveResult]           = useState(null);
+  const [copySuccess, setCopySuccess]         = useState(false);
   const recogRef                              = useRef(null);
   const transcriptRef                         = useRef(null);
 
@@ -798,6 +871,8 @@ function MeetingCopilotView({ user }) {
     stopRecording();
     setTranscript(''); setInterimTranscript(''); setProjectCode('');
     setAudioFile(null); setReportUrl(null); setReportMeta(null); setError(null);
+    setNoteItems([]); setEmailSubject(''); setEmailBody('');
+    setSaveResult(null); setCopySuccess(false);
   };
 
   const generateReport = async () => {
@@ -824,10 +899,73 @@ function MeetingCopilotView({ user }) {
       });
       setReportUrl(`${API_BASE}/api/ai/report/download/${data.report_id}`);
       setReportMeta(data);
+      setNoteItems((data.candidate_notes || []).map(n => ({
+        included:         true,
+        note_type:        n.note_type === 'data_point' ? 'data_point' : 'decision',
+        note_text:        n.note_text || '',
+        originalText:     n.note_text || '',
+        exp_number_full:  n.exp_number_full || null,
+        project_code:     n.project_code || null,
+        source_report_id: n.source_report_id ?? data.report_id,
+      })));
+      setEmailSubject(data.email_draft?.subject || '');
+      setEmailBody(data.email_draft?.body || '');
+      setSaveResult(null);
+      setCopySuccess(false);
     } catch (e) {
       setError(e.message);
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const toggleNoteIncluded = (idx) => {
+    setNoteItems(items => items.map((it, i) => i === idx ? { ...it, included: !it.included } : it));
+  };
+
+  const updateNoteText = (idx, text) => {
+    setNoteItems(items => items.map((it, i) => i === idx ? { ...it, note_text: text } : it));
+  };
+
+  const saveNotesToMemory = async () => {
+    const toSave = noteItems.filter(n => n.included);
+    if (!toSave.length) return;
+    setSavingNotes(true); setSaveResult(null);
+    try {
+      for (const item of toSave) {
+        await apiFetch('/api/ai/notes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            project_code:     item.project_code || projectCode || '',
+            exp_number_full:  item.exp_number_full,
+            note_text:        item.note_text,
+            note_type:        item.note_type,
+            source_report_id: item.source_report_id,
+            author:           user?.userDetails || '',
+          }),
+        });
+      }
+      setSaveResult({ ok: true, count: toSave.length });
+    } catch (e) {
+      setSaveResult({ ok: false, message: e.message });
+    } finally {
+      setSavingNotes(false);
+    }
+  };
+
+  const emailWordCount = emailBody.trim() ? emailBody.trim().split(/\s+/).length : 0;
+  const emailReadMins  = Math.max(1, Math.round(emailWordCount / 180));
+  const mailtoHref     = `mailto:?subject=${encodeURIComponent(emailSubject)}&body=${encodeURIComponent(emailBody)}`;
+
+  const copyEmailToClipboard = async () => {
+    const text = `Subject: ${emailSubject}\n\n${emailBody}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopySuccess(true);
+      setTimeout(() => setCopySuccess(false), 2000);
+    } catch (e) {
+      setError('Could not copy to clipboard: ' + e.message);
     }
   };
 
@@ -947,6 +1085,99 @@ function MeetingCopilotView({ user }) {
           </div>
         </div>
       </div>
+
+      {reportMeta && (
+        <div style={{ maxWidth: '960px', marginTop: '32px' }}>
+
+          {/* ── Update Project Memory ──────────────────────────────────────── */}
+          <div style={{ marginBottom: '32px' }}>
+            <div style={{ color: C.navy, fontFamily: FONT, fontSize: '15px', fontWeight: 800, marginBottom: '4px' }}>Update Project Memory</div>
+            <div style={{ color: C.textSub, fontFamily: FONT, fontSize: '12px', marginBottom: '14px' }}>
+              Decisions and data points detected in this meeting. Review, edit, and save the ones worth keeping.
+            </div>
+
+            {noteItems.length === 0 ? (
+              <div style={{ color: C.textSub, fontFamily: FONT, fontSize: '12px', fontStyle: 'italic' }}>
+                No project-memory candidates found in this transcript.
+              </div>
+            ) : (
+              <>
+                {noteItems.map((item, idx) => (
+                  <NoteCandidateCard
+                    key={idx}
+                    item={item}
+                    onToggle={() => toggleNoteIncluded(idx)}
+                    onTextChange={(text) => updateNoteText(idx, text)}
+                  />
+                ))}
+                <button
+                  onClick={saveNotesToMemory}
+                  disabled={savingNotes || !noteItems.some(n => n.included)}
+                  style={{
+                    background: savingNotes ? C.ice : C.navy,
+                    color: savingNotes ? C.textDim : C.white,
+                    border: 'none', borderRadius: '8px', padding: '10px 18px',
+                    fontFamily: FONT, fontSize: '13px', fontWeight: 700,
+                    cursor: savingNotes || !noteItems.some(n => n.included) ? 'default' : 'pointer',
+                    marginTop: '4px',
+                  }}
+                >
+                  {savingNotes ? '⏳ Saving…' : `Save ${noteItems.filter(n => n.included).length} to Project Memory`}
+                </button>
+                {saveResult && (
+                  <div style={{ marginTop: '10px', fontFamily: FONT, fontSize: '12px', color: saveResult.ok ? C.blue : C.danger }}>
+                    {saveResult.ok
+                      ? `✓ Saved ${saveResult.count} note${saveResult.count === 1 ? '' : 's'} to project memory.`
+                      : `Failed to save: ${saveResult.message}`}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* ── Email Summary ──────────────────────────────────────────────── */}
+          <div>
+            <div style={{ color: C.navy, fontFamily: FONT, fontSize: '15px', fontWeight: 800, marginBottom: '4px' }}>Email Summary</div>
+            <div style={{ color: C.textSub, fontFamily: FONT, fontSize: '12px', marginBottom: '14px' }}>
+              Editable draft — review before sending.
+            </div>
+
+            <div style={{ color: C.blue, fontFamily: FONT, fontSize: '11px', fontWeight: 700, letterSpacing: '1px', marginBottom: '6px' }}>SUBJECT</div>
+            <input
+              value={emailSubject}
+              onChange={e => setEmailSubject(e.target.value)}
+              style={{ width: '100%', boxSizing: 'border-box', background: C.ice, border: `1.5px solid ${C.border}`, borderRadius: '6px', padding: '10px 14px', color: C.blue, fontFamily: FONT, fontSize: '13px', outline: 'none', marginBottom: '14px' }}
+            />
+
+            <div style={{ color: C.blue, fontFamily: FONT, fontSize: '11px', fontWeight: 700, letterSpacing: '1px', marginBottom: '6px' }}>BODY</div>
+            <textarea
+              value={emailBody}
+              onChange={e => setEmailBody(e.target.value)}
+              rows={10}
+              style={{ width: '100%', boxSizing: 'border-box', background: C.ice, border: `1.5px solid ${C.border}`, borderRadius: '6px', padding: '10px 14px', color: C.blue, fontFamily: FONT, fontSize: '13px', lineHeight: '1.6', resize: 'vertical', outline: 'none' }}
+            />
+
+            <div style={{ color: C.textSub, fontFamily: FONT, fontSize: '11px', margin: '6px 0 14px' }}>
+              {emailWordCount} words · ~{emailReadMins} min read
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+              <a
+                href={mailtoHref}
+                style={{ display: 'inline-block', background: C.navy, color: C.white, borderRadius: '6px', padding: '9px 16px', fontFamily: FONT, fontSize: '12px', fontWeight: 700, textDecoration: 'none' }}
+              >
+                ✉ Open in Outlook
+              </a>
+              <button
+                onClick={copyEmailToClipboard}
+                style={{ background: 'transparent', border: `1.5px solid ${C.border}`, color: C.blue, borderRadius: '6px', padding: '9px 16px', fontFamily: FONT, fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}
+              >
+                {copySuccess ? '✓ Copied' : '⧉ Copy to clipboard'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

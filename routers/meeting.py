@@ -8,6 +8,7 @@ GET  /api/ai/meeting/reports — list all meeting reports
 import os
 import io
 import re
+import json
 import uuid
 import asyncio
 import httpx
@@ -156,9 +157,9 @@ async def _call_gpt(system_prompt: str, user_content: str) -> str:
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
 
-# ── Parse GPT 4-section output ────────────────────────────────────────────────
+# ── Parse GPT section output ──────────────────────────────────────────────────
 SECTION_RE = re.compile(
-    r"##\s*(CONTEXT|HYPOTHESIS REVIEW|EXPERIMENT PLAN|RISKS?)\s*\n",
+    r"##\s*(CONTEXT|HYPOTHESIS REVIEW|EXPERIMENT PLAN|RISKS?|CANDIDATE_NOTES|EMAIL_DRAFT)\s*\n",
     re.IGNORECASE
 )
 
@@ -168,6 +169,8 @@ _SECTION_KEY_MAP = {
     "experiment plan":    "experiment_plan",
     "risk":               "risks",
     "risks":              "risks",
+    "candidate_notes":    "candidate_notes",
+    "email_draft":        "email_draft",
 }
 
 def _parse_sections(gpt_text: str) -> dict:
@@ -193,6 +196,13 @@ def _extract_topic(gpt_text: str) -> str:
 def _slug(text: str, max_len: int = 40) -> str:
     clean = re.sub(r"[^\w\s-]", "", text).strip()
     return re.sub(r"\s+", "-", clean).lower()[:max_len]
+
+def _strip_json_fence(text: str) -> str:
+    """Strip a ```json ... ``` (or bare ``` ... ```) fence around a GPT section."""
+    text = text.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"```\s*$", "", text)
+    return text.strip()
 
 # ── Word doc builder ──────────────────────────────────────────────────────────
 def _set_cell_shading(cell, hex_color: str):
@@ -309,28 +319,67 @@ async def _upload_blob(content: bytes, blob_path: str) -> str:
     return f"{account_url}/{BLOB_CONTAINER}/{blob_path}"
 
 # ── Meeting copilot system prompt ─────────────────────────────────────────────
-MEETING_SYSTEM = """You are the R&D Meeting Co-Pilot for Covvalent, a specialty chemicals CDMO in India. You receive R&D meeting transcripts in English, Hinglish (Hindi-English mix), or any combination. Your output is ALWAYS in English regardless of input language.
+MEETING_SYSTEM = """
+You are the R&D Meeting Co-Pilot for Covvalent, a specialty chemicals CDMO in India.
+You receive R&D meeting transcripts in English, Hinglish (Hindi-English mix), or any
+combination. Your output is ALWAYS in English regardless of input language.
 
-Analyse the transcript and produce a structured report with EXACTLY these 4 sections (use these exact headers):
+Analyse the transcript and produce a structured report with EXACTLY these six
+sections (use these exact headers):
 
 ## CONTEXT
-One paragraph only. What process/step is being discussed, what problem exists, what the team is trying to achieve. No hypotheses or analysis here.
+One paragraph only. What process/step is being discussed, what problem exists,
+what the team is trying to achieve. No hypotheses or analysis here.
 
 ## HYPOTHESIS REVIEW
 Bulleted list. For each hypothesis in the transcript:
 - Sound: [hypothesis statement] (Verdict: Sound) — no reasoning needed
 - Off: [hypothesis] — 1-3 lines on what is wrong and why
 - Needs sharpening: [hypothesis] — 1-3 lines reframing it precisely
-Then add: Added by reviewer: [hypothesis the team missed] — 1-3 lines on mechanism and plausibility
+Then add: Added by reviewer: [hypothesis the team missed] — 1-3 lines on
+mechanism and plausibility
 
 ## EXPERIMENT PLAN
-First: one paragraph stating DoE family choice and expected stop point (e.g. 'Total runs: 7. Expected stop at run 3-5 if X holds. Run all 7 only if every early experiment is inconclusive.')
-Then numbered bullets: [Factor varied] | [Range/levels] | [Response measured] | [Stop/proceed rule]
+First: one paragraph stating DoE family choice and expected stop point.
+Then numbered bullets: [Factor varied] | [Range/levels] | [Response measured] |
+[Stop/proceed rule]
 
 ## RISKS
-2-5 bullets only. Major safety risks of the PROPOSED experiments: exotherm, pressure, gas evolution, reactive intermediates, runaway risk. One sentence each. No general risks, no scale-up caveats.
+2-5 bullets only. Major safety risks of the PROPOSED experiments: exotherm,
+pressure, gas evolution, reactive intermediates, runaway risk. One sentence each.
 
-Language rules: Read Hinglish naturally. Filler words (bhai, yaar, na, toh, achha) carry no chemistry — ignore them. Technical terms in English carry the meaning. Output in English."""
+## CANDIDATE_NOTES
+A JSON array (in a fenced ```json block) of project-memory candidates found in
+the transcript. Two categories only:
+- "decision": strategic/process decisions — route changes, abandoned
+  approaches, procedural changes ("we decided to...", "dropping the...",
+  "holding at...")
+- "data_point": a reported measured value or correction not certain to be in
+  the ELN yet — especially if described as approximate, recalled from memory,
+  or contradicting a logged value.
+Each item: {"note_type": "decision"|"data_point", "note_text": "...",
+"exp_number_full": "..."|null, "project_code": "..."|null}
+note_text must be the FULL, complete statement with real context — do not
+truncate to a fake one-liner. Do not invent items not grounded in the
+transcript. If nothing qualifies, return an empty array.
+
+## EMAIL_DRAFT
+A JSON object (in a fenced ```json block): {"subject": "...", "body": "..."}
+- subject: "Meeting Summary — <topic/project(s)> — <date>"
+- body:
+  1. One short paragraph (1-3 sentences) framing what was discussed.
+  2. "Decisions & Next Steps:" — numbered list. Each item states the
+     decision/finding in one sentence, then "-> " followed by the specific
+     actionable next step.
+  3. One closing sentence on safety flags, or state none were raised.
+  4. Keep the body under ~280 words total (roughly a 2-minute read). If there
+     are more than 5 decisions, include only the 5 most consequential and add
+     "(N additional items covered in the full report)".
+
+Language rules: Read Hinglish naturally. Filler words (bhai, yaar, na, toh,
+achha) carry no chemistry — ignore them. Technical terms in English carry the
+meaning. Output in English.
+"""
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
@@ -376,6 +425,31 @@ async def generate_meeting_report(req: MeetingRequest):
     filename       = f"{generated_date}-{slug}-meeting.docx"
     blob_path      = f"meetings/{filename}"
 
+    # ── Candidate project-memory notes ────────────────────────────────────
+    candidate_notes = []
+    raw_candidates  = sections.get("candidate_notes", "")
+    if raw_candidates:
+        try:
+            parsed = json.loads(_strip_json_fence(raw_candidates))
+            if isinstance(parsed, list):
+                candidate_notes = [item for item in parsed if isinstance(item, dict)]
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"[MEETING WARNING] Failed to parse CANDIDATE_NOTES JSON: {e}")
+
+    # ── Email draft ────────────────────────────────────────────────────────
+    email_draft = {"subject": "", "body": ""}
+    raw_email   = sections.get("email_draft", "")
+    if raw_email:
+        try:
+            parsed = json.loads(_strip_json_fence(raw_email))
+            if isinstance(parsed, dict):
+                email_draft = {
+                    "subject": parsed.get("subject", ""),
+                    "body":    parsed.get("body", ""),
+                }
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"[MEETING WARNING] Failed to parse EMAIL_DRAFT JSON: {e}")
+
     docx_bytes = _build_meeting_report_docx(
         topic, req.project_code, req.author, sections, generated_date
     )
@@ -396,12 +470,19 @@ async def generate_meeting_report(req: MeetingRequest):
     conn.commit()
     conn.close()
 
+    for item in candidate_notes:
+        if not item.get("project_code"):
+            item["project_code"] = req.project_code
+        item["source_report_id"] = report_id
+
     return {
-        "report_id":      report_id,
-        "blob_url":       blob_url,
-        "topic":          topic,
-        "generated_date": db_date,
-        "filename":       filename,
+        "report_id":       report_id,
+        "blob_url":        blob_url,
+        "topic":           topic,
+        "generated_date":  db_date,
+        "filename":        filename,
+        "candidate_notes": candidate_notes,
+        "email_draft":     email_draft,
     }
 
 
