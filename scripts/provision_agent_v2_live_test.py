@@ -82,9 +82,34 @@ def foundry_post(path: str, body: dict) -> dict:
 
 
 def load_tools() -> list:
-    """Read the six committed tool schemas directly — no duplicate copy inline."""
+    """
+    Read the six committed tool schemas directly — no duplicate copy of
+    their content inline — then flatten each from the Assistants
+    tool-wrapper shape on disk ({"type":"function","function":{"name":...}})
+    to the flat shape Foundry's /agents endpoint expects
+    ({"type":"function","name":...,"description":...,"parameters":...}).
+    This mirrors routers/agent_v2.py's _load_tools_v2() exactly (duplicated
+    here, not imported, per this script's standalone-only requirement) —
+    the earlier version of this function skipped this step entirely and
+    submitted the raw nested shape, which is why Foundry rejected all six
+    tools with "Required properties [\"name\"] are not present".
+    """
     with open(TOOLS_EXPORT_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+        raw_tools = json.load(f)
+
+    flattened = []
+    for t in raw_tools:
+        if t.get("type") != "function" or "function" not in t:
+            continue
+        fn = t["function"]
+        flattened.append({
+            "type":        "function",
+            "name":        fn["name"],
+            "description": fn.get("description", ""),
+            "parameters":  fn.get("parameters", {}),
+            "strict":      fn.get("strict", False),
+        })
+    return flattened
 
 
 def load_instructions() -> str:
