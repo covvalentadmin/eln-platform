@@ -394,13 +394,10 @@ async def generate_response(agent_name, conversation_id, foundry_client, tool_cl
             r = await foundry_client.post(
                 f"{base_url}/openai/v1/responses",
                 json={
-                    # GUESS: exact key name/shape for referencing a persisted
-                    # agent version. "agent_reference": {"name": ...} is a
-                    # guess — could instead be a bare "agent": agent_name
-                    # string, or keyed by id/version rather than name. Not
-                    # verified against Azure's actual API reference (see
-                    # gap #3 in the module docstring).
-                    "agent_reference": {"name": agent_name},
+                    # GUESS: top-level "agent" key with a nested
+                    # {"type": "agent_reference", "name": ...} value —
+                    # pending confirmation in scripts/test_response_live.py.
+                    "agent": {"type": "agent_reference", "name": agent_name},
                     "conversation":    conversation_id,
                     "input":           input_items,
                 }
@@ -505,7 +502,10 @@ async def chat(request: ChatRequest):
 
         # ── 1. Add the user's message to the conversation — EXACTLY ONCE,
         # before any retry logic. This step is never retried. ────────────────
-        message_items = [{"type": "message", "role": "user", "content": request.message}]
+        # GUESS: message content as a structured array of {"type": "input_text",
+        # "text": ...} blocks rather than a plain string — pending
+        # confirmation in scripts/test_response_live.py.
+        message_items = [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": request.message}]}]
         try:
             if request.thread_id:
                 conversation_id = request.thread_id
