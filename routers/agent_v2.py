@@ -438,8 +438,14 @@ async def generate_response(agent_name, conversation_id, foundry_client, tool_cl
                 err_body = e.response.json()
             except Exception:
                 err_body = {}
+            # NOTE: the fallback default below already hardcodes "server_error"
+            # for unparseable error bodies, so after aligning this branch's key
+            # to "error" (matching the raw-body return paths below), unparseable
+            # HTTP-level failures will now also correctly trigger the
+            # AGENT_NAME_V2_FALLBACK retry, not just in-band model failures —
+            # this is an intentional, noted widening, not an accident.
             last_error = err_body.get("error") or {"code": "server_error", "message": str(e)}
-            return "failed", {"last_error": last_error}
+            return "failed", {"error": last_error}
         except Exception as e:
             raise HTTPException(503, detail=f"Failed to reach AI service: {str(e)}")
 
@@ -576,7 +582,7 @@ async def chat(request: ChatRequest):
             agent_used = AGENT_NAME_V2_FALLBACK
 
         if status == "failed":
-            last_error = response.get("last_error", {})
+            last_error = response.get("error", {})
             code = last_error.get("code", "unknown")
             message = last_error.get("message", "No details available")
             raise HTTPException(
