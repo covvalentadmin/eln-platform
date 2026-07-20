@@ -552,8 +552,18 @@ async def chat(request: ChatRequest):
         status, response = await generate_response(AGENT_NAME_V2, conversation_id, foundry_client, tool_client, base_url, tool_calls_log, user_email)
         agent_used = AGENT_NAME_V2
 
+        # Diagnostic print, unconditional — runs regardless of which branch
+        # of the if-check below fires, so the real object is visible on the
+        # next failure whether or not it matches "server_error" exactly.
+        print(f"chat(): generate_response(agent={agent_used}) returned status={response.get('status')!r}, error={response.get('error')!r}")
+
+        # CORRECTED: was checking response.get("last_error", {}).get("code") —
+        # "last_error" is the legacy Assistants-API "run" object's field name.
+        # The actual Responses API field is top-level "error" (confirmed via
+        # the official Response object reference schema and our own captured
+        # live response body, which showed "error": null at the top level).
         if (status == "failed"
-                and response.get("last_error", {}).get("code") == "server_error"):
+                and (response.get("error") or {}).get("code") == "server_error"):
             # Retries against a SECOND provisioned agent version
             # (AGENT_NAME_V2_FALLBACK), over the SAME conversation, WITHOUT
             # re-adding any message — the message-add step above already ran
@@ -561,7 +571,7 @@ async def chat(request: ChatRequest):
             # double-send it. See the module docstring's "TWO-AGENT-VERSION
             # FALLBACK DESIGN" section for why this is a real model-level
             # fallback again (via a distinct agent_name), and gap #6 for the
-            # still-unconfirmed shape of "last_error" gating this retry.
+            # still-unconfirmed shape of "error" gating this retry.
             status, response = await generate_response(AGENT_NAME_V2_FALLBACK, conversation_id, foundry_client, tool_client, base_url, tool_calls_log, user_email)
             agent_used = AGENT_NAME_V2_FALLBACK
 
