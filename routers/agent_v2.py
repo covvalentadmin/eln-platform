@@ -102,21 +102,43 @@ KNOWN GAPS / THINGS I GUESSED AT — READ BEFORE USING THIS FILE FOR ANYTHING
    has; it's just delivered once at provisioning instead of resent on every
    message.
 
-3. WIRE FORMAT FOR /conversations, /conversations/{id}/items, AND /responses.
-   Field names below ("items", "type": "message", "output",
-   "type": "function_call", "call_id", "function_call_output",
-   "output_text") are reconstructed from the general publicly documented
-   OpenAI Responses API shape. The /conversations/{id}/items sub-resource
-   path and its bare {"items": [...]} request body (used by
-   _conversation_items_create() to add a message to a continuing
-   conversation) are likewise a guess at the general "conversations.items.create"
-   pattern. I have not verified any of this against a live Azure AI Foundry
-   v1 endpoint or an SDK reference present in this repo (there is no
-   azure-ai-projects or azure-ai-agents dependency in requirements.txt, and
-   no example call anywhere in this codebase to check against). Every
-   `f"{base_url}/openai/v1/..."` call and every `.get("type") == ...` branch
-   needs verification against a real response body before this file is
-   wired into anything.
+3. WIRE FORMAT FOR /conversations, /conversations/{id}/items, AND /responses —
+   PARTIALLY CONFIRMED by a live run via scripts/test_response_live.py
+   against eln-agent-v2-test:
+   - [CONFIRMED] The /responses agent reference: top-level key MUST be
+     "agent_reference" (nested {"type": "agent_reference", "name": ...}).
+     A top-level "agent" key was tried first and Foundry returned a 400:
+     "The 'agent' property is deprecated. Use 'agent_reference' instead." —
+     so "agent_reference" is not a guess anymore, it's the confirmed,
+     required key, and "agent" is confirmed WRONG (deprecated, will 400).
+   - [CONFIRMED] A conversation item's "content" must be a structured array
+     of blocks ({"type": "input_text", "text": ...}), not a plain string —
+     the live conversation-create call succeeded with this shape and the
+     subsequent /responses call generated a real reply from it.
+   - [STILL UNCONFIRMED] Everything else in this gap remains open: the
+     /conversations/{id}/items sub-resource path and its bare
+     {"items": [...]} body (used by _conversation_items_create() for a
+     CONTINUING conversation) was not exercised by the live test — only
+     conversation creation was. Likewise unconfirmed: "output",
+     "type": "function_call", "call_id", "function_call_output", and
+     "output_text" — the live test only exercised a no-tool-call turn and
+     printed the raw response rather than running it through this file's
+     own output-parsing logic in chat(), so the "output_text" vs "text"
+     content-block branch and the function_call round-trip are both still
+     reconstructed from the general publicly documented OpenAI Responses
+     API shape, not verified. There is still no azure-ai-projects or
+     azure-ai-agents dependency in requirements.txt, and no SDK reference in
+     this repo to check the rest against.
+
+   NOTED OBSERVATION (not a gap to fix, just worth knowing): the live
+   no-tool-call response's own prose, when asked to describe itself and
+   list its tools, mentioned a tool name — "multi_tool_use.parallel" — that
+   does NOT appear anywhere in TOOLS_V2 or the six real schemas in
+   prompts/agent_tools_current_export.json. The model appears to have
+   hallucinated it into its self-description rather than actually invoking
+   it (no function_call item was present in the output). Worth re-checking
+   once a real tool-call round trip has been tested, in case it turns out to
+   be some Foundry-injected meta-tool rather than a pure hallucination.
 
 4. No `?api-version=...` query param is appended to the v1 calls, per your
    instructions giving the paths without one. I don't know whether Azure's
@@ -394,10 +416,13 @@ async def generate_response(agent_name, conversation_id, foundry_client, tool_cl
             r = await foundry_client.post(
                 f"{base_url}/openai/v1/responses",
                 json={
-                    # GUESS: top-level "agent" key with a nested
-                    # {"type": "agent_reference", "name": ...} value —
-                    # pending confirmation in scripts/test_response_live.py.
-                    "agent": {"type": "agent_reference", "name": agent_name},
+                    # CONFIRMED against a live Foundry 400 error: "agent" is
+                    # deprecated ("The 'agent' property is deprecated. Use
+                    # 'agent_reference' instead."). Top-level key must be
+                    # "agent_reference", nested value shape
+                    # {"type": "agent_reference", "name": ...} — see gap #3
+                    # in the module docstring.
+                    "agent_reference": {"type": "agent_reference", "name": agent_name},
                     "conversation":    conversation_id,
                     "input":           input_items,
                 }
