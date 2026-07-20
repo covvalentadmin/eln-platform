@@ -460,6 +460,8 @@ async def generate_response(agent_name, conversation_id, foundry_client, tool_cl
         output_items = response.get("output", [])
         function_calls = [item for item in output_items if item.get("type") == "function_call"]
 
+        print(f"generate_response: round {_round + 1}, response_id={response.get('id')}, {len(function_calls)} function_call(s) found")
+
         if not function_calls:
             return "completed", response
 
@@ -473,6 +475,8 @@ async def generate_response(agent_name, conversation_id, foundry_client, tool_cl
                 tool_args = {}
 
             tool_calls_log.append({"tool": tool_name, "args": tool_args, "agent_name": agent_name})
+            key_arg = tool_args.get("exp_number_full") or tool_args.get("experiment_id")
+            print(f"generate_response: round {_round + 1} — dispatching tool={tool_name}, key_arg={key_arg}")
             result = await dispatch_tool(tool_name, tool_args, tool_client, user_email)
             tool_outputs.append({
                 "type":    "function_call_output",
