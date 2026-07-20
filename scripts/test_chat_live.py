@@ -80,7 +80,8 @@ from routers import agent_v2
 # Real question from the AIE-301 review doc — chosen because it's known to
 # require fetch_experiment and/or search_experiments, forcing at least one
 # real function_call round trip through generate_response()'s tool loop.
-TEST_MESSAGE = "What experiments have we done on tryptophan synthesis?"
+# Overridable via a command-line argument: python scripts/test_chat_live.py "<message>"
+TEST_MESSAGE = sys.argv[1] if len(sys.argv) > 1 else "What experiments have we done on tryptophan synthesis?"
 
 # Records every intercepted update_project_notes call, for the final report.
 _intercepted_notes_calls = []
