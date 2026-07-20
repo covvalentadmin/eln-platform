@@ -174,6 +174,12 @@ async def main():
     agent_v2.dispatch_tool = _safe_dispatch_tool
     print("Patched agent_v2.get_foundry_token -> az-CLI-based test token fetch")
     print("Patched agent_v2.dispatch_tool -> safety wrapper (update_project_notes intercepted)")
+
+    # Temporary — forces the primary agent attempt to fail, so this run
+    # exercises the AGENT_NAME_V2_FALLBACK retry path. AGENT_NAME_V2_FALLBACK
+    # is left untouched, still pointing at the real "eln-agent-v2-test-fallback".
+    agent_v2.AGENT_NAME_V2 = "eln-agent-v2-test-DOES-NOT-EXIST"
+    print(f"Patched agent_v2.AGENT_NAME_V2 -> {agent_v2.AGENT_NAME_V2!r} (forces primary-agent failure, to exercise the fallback retry)")
     print()
 
     request = agent_v2.ChatRequest(
