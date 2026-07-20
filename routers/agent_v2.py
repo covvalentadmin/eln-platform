@@ -489,6 +489,7 @@ async def generate_response(agent_name, conversation_id, foundry_client, tool_cl
         # /responses has the same or a different limit; keeping the existing
         # truncation policy as a safe default.
         total_size = sum(len(o["output"]) for o in tool_outputs)
+        print(f"generate_response: round {_round + 1} — total tool output size: {total_size} bytes{' (TRUNCATION TRIGGERED)' if total_size > 20000 else ''}")
         if total_size > 20000:
             for o in tool_outputs:
                 if len(o["output"]) > 3000:
