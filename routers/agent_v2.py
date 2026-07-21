@@ -541,7 +541,17 @@ async def chat(request: ChatRequest):
         # GUESS: message content as a structured array of {"type": "input_text",
         # "text": ...} blocks rather than a plain string — pending
         # confirmation in scripts/test_response_live.py.
-        message_items = [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": request.message}]}]
+        message_content = request.message
+        if request.attachments:
+            blocks = []
+            for att in request.attachments:
+                block = f"--- Attached document: {att.filename} ---\n{att.summary}"
+                if att.truncated:
+                    block += "\n[Note: summary truncated due to length]"
+                block += "\n--- End ---"
+                blocks.append(block)
+            message_content = "\n\n".join(blocks) + "\n\n" + request.message
+        message_items = [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": message_content}]}]
         try:
             if request.thread_id:
                 conversation_id = request.thread_id
