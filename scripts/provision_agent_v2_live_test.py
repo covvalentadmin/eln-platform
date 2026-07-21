@@ -44,6 +44,14 @@ AGENTS_TO_PROVISION = [
     {"name": "eln-agent-v2-test-fallback", "model": "gpt-4o"},
 ]
 
+# Real production agent names for the actual cutover. Kept in a SEPARATE
+# list so a bare re-run of this script (no env var set) can never touch
+# these by accident — only used when PROVISION_TARGET=prod is set explicitly.
+PROD_AGENTS_TO_PROVISION = [
+    {"name": "eln-agent-v2-prod",          "model": "gpt-5-4"},
+    {"name": "eln-agent-v2-prod-fallback", "model": "gpt-4o"},
+]
+
 
 def get_token() -> str:
     """Get AAD token via Azure CLI."""
@@ -119,12 +127,22 @@ def load_instructions() -> str:
 
 
 def main():
+    target = os.environ.get("PROVISION_TARGET", "test").lower()
+    if target == "test":
+        agents_to_provision = AGENTS_TO_PROVISION
+    elif target == "prod":
+        agents_to_provision = PROD_AGENTS_TO_PROVISION
+    else:
+        print(f"ERROR: Unknown PROVISION_TARGET={target!r} — must be 'test' or 'prod'")
+        sys.exit(1)
+    print(f"PROVISION_TARGET={target!r} — will provision: {[a['name'] for a in agents_to_provision]}")
+
     tools        = load_tools()
     instructions = load_instructions()
     print(f"Loaded {len(tools)} tool schemas from {TOOLS_EXPORT_PATH}")
     print(f"Loaded {len(instructions)}-character instructions from {INSTRUCTIONS_EXPORT_PATH}")
 
-    for agent in AGENTS_TO_PROVISION:
+    for agent in agents_to_provision:
         name  = agent["name"]
         model = agent["model"]
         print(f"\nProvisioning agent '{name}' (model={model}) …")
