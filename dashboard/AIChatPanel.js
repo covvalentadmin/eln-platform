@@ -174,11 +174,34 @@ export default function AIChatPanel({ onClose, user }) {
   const bottomRef = useRef(null);
   const inputRef  = useRef(null);
   const abortRef  = useRef(null);
+  const fileInputRef = useRef(null);
+  const [attachedFile, setAttachedFile] = useState(null);
 
   useEffect(() => { sessionStorage.setItem(SESSION_KEY, JSON.stringify(messages)); }, [messages]);
   useEffect(() => { if (threadId) sessionStorage.setItem(THREAD_KEY, threadId); }, [threadId]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, isLoading]);
   useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const handleFileSelect = useCallback(async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const res = await fetch(`${API_BASE}/api/ai/upload`, { method: 'POST', body: formData });
+      if (!res.ok) {
+        let detail = '';
+        try { detail = (await res.json()).detail; } catch {}
+        alert('Upload failed: ' + (detail || res.statusText));
+        return;
+      }
+      const data = await res.json();
+      setAttachedFile({ filename: data.filename, summary: data.summary, truncated: data.truncated });
+    } catch (err) {
+      alert('Upload error: ' + err.message);
+    }
+  }, []);
 
   const sendMessage = useCallback(async (text) => {
     if (!text?.trim() || isLoading) return;
@@ -203,7 +226,8 @@ export default function AIChatPanel({ onClose, user }) {
         body: JSON.stringify({
           message: userText,
           thread_id: threadId || null,
-          user_email: user?.userDetails || null
+          user_email: user?.userDetails || null,
+          attachments: attachedFile ? [attachedFile] : null
         }),
         signal: controller.signal
       });
@@ -219,6 +243,7 @@ export default function AIChatPanel({ onClose, user }) {
 
       const data = await res.json();
       if (data.thread_id && !threadId) setThreadId(data.thread_id);
+      setAttachedFile(null);
 
       const wantsCSV = /csv|excel|download|export/i.test(userText);
       if (wantsCSV && hasDownloadableContent(data.answer)) {
@@ -237,7 +262,7 @@ export default function AIChatPanel({ onClose, user }) {
       abortRef.current = null;
       setTimeout(() => inputRef.current?.focus(), 100);
     }
-  }, [isLoading, threadId]);
+  }, [isLoading, threadId, attachedFile]);
 
   // Direct export — bypasses agent, calls /api/ai/export with parsed intent
   const handleDirectExport = useCallback(async () => {
@@ -291,6 +316,7 @@ export default function AIChatPanel({ onClose, user }) {
   const handleNewSession = () => {
     if (isLoading) { abortRef.current?.abort(); setIsLoading(false); }
     setMessages([]); setThreadId(null); setInput('');
+    setAttachedFile(null);
     sessionStorage.removeItem(SESSION_KEY);
     sessionStorage.removeItem(THREAD_KEY);
     setTimeout(() => inputRef.current?.focus(), 100);
@@ -335,7 +361,20 @@ export default function AIChatPanel({ onClose, user }) {
       {/* Input */}
       <div style={{ padding: '16px 24px 24px', borderTop: `1.5px solid ${C.ice}`, flexShrink: 0, background: C.white }}>
         <div style={{ maxWidth: '860px', margin: '0 auto' }}>
+          {attachedFile && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: C.ice, border: `1.5px solid ${C.cyan}`, borderRadius: '6px', padding: '4px 10px', marginBottom: '6px', fontSize: '11px', color: C.textDim, fontFamily: FONT }}>
+              📎 {attachedFile.filename}{attachedFile.truncated ? ' (truncated)' : ''}
+              <button onClick={() => setAttachedFile(null)} aria-label="Remove attachment" style={{ background: 'transparent', border: 'none', color: C.textDim, cursor: 'pointer', fontSize: '13px', marginLeft: '4px', fontFamily: FONT }}>✕</button>
+            </div>
+          )}
           <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end', background: C.ice, border: `1.5px solid ${C.cyan}`, borderRadius: '8px', padding: '8px 12px' }}>
+            <input ref={fileInputRef} type="file" accept=".pdf,.xlsx,.xls,.csv" onChange={handleFileSelect} style={{ display: 'none' }} />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              title="Attach a PDF, Excel, or CSV file"
+              aria-label="Attach file"
+              style={{ background: 'transparent', border: `1.5px solid ${C.cyan}`, borderRadius: '6px', color: C.textDim, width: '34px', height: '34px', cursor: 'pointer', fontSize: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontFamily: FONT }}
+            >📎</button>
             <textarea
               ref={inputRef}
               value={input}
