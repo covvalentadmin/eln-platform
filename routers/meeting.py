@@ -1,8 +1,20 @@
 """
 routers/meeting.py — ELN Meeting Copilot
-POST /api/ai/speech          — audio transcription via Azure Speech SDK
-POST /api/ai/meeting         — transcript → structured report → Word doc → blob
-GET  /api/ai/meeting/reports — list all meeting reports
+POST /api/ai/meeting/audio/upload      — store one audio chunk (live recording or a whole uploaded file)
+POST /api/ai/meeting/audio/transcribe  — submit all chunks for a session as one batch transcription job
+GET  /api/ai/meeting/audio/status      — poll a batch transcription job, return assembled transcript when done
+POST /api/ai/speech                    — legacy single-shot transcription (short clips only, back-compat)
+POST /api/ai/meeting                   — transcript → structured report → Word doc → blob
+GET  /api/ai/meeting/reports           — list all meeting reports
+
+Transcription is done entirely via the Azure AI Speech REST API (batch +
+fast transcription), NOT the azure-cognitiveservices-speech SDK. The SDK
+needs native OpenSSL bindings that are unreliable to install on this App
+Service's Linux image, and recognize_once() (the call the old version of
+this file used) only ever returns the FIRST utterance of a file, which is
+almost certainly why "audio capture" looked broken for anything longer than
+a few seconds — regardless of file duration. Batch transcription REST has no
+such ceiling and is the officially recommended path for long recordings.
 """
 
 import os
@@ -11,11 +23,10 @@ import re
 import json
 import time
 import uuid
-import asyncio
 import logging
 import httpx
 import pyodbc
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
@@ -33,12 +44,33 @@ SUBSCRIPTION_ID  = "9e25d11c-3753-4b8c-a575-0bcc44f964d4"
 RESOURCE_GROUP   = "rg-eln-covvalent"
 STORAGE_ACCOUNT  = "stelncoovalent"
 BLOB_CONTAINER   = "eln-reports"
+AUDIO_CONTAINER  = "eln-meeting-audio"        # new — raw meeting audio chunks
+
+# Speech to text REST API. v3.1/v3.2 (what the old SDK-based code effectively
+# rode on top of) retired March 31, 2026 — this is the current GA surface.
+SPEECH_DATA_ENDPOINT = f"https://{SPEECH_REGION}.api.cognitive.microsoft.com"
+SPEECH_API_VERSION   = "2025-10-15"
+
+# Hinglish = English + Hindi code-switching. Continuous language ID (below)
+# re-detects language phrase-by-phrase within a single file, which is what
+# actually matters for code-mixed speech — "Single" mode picks one language
+# for the whole file and would mangle whichever language loses.
+MEETING_LOCALES = ["en-IN", "hi-IN"]
+
+_AUDIO_EXT_MAP = {
+    "audio/wav":   ".wav", "audio/webm": ".webm", "video/webm": ".webm",
+    "audio/mp4":   ".mp4", "audio/x-m4a": ".mp4",
+    "audio/ogg":   ".ogg", "audio/mpeg": ".mp3",
+}
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
 class MeetingRequest(BaseModel):
     transcript:   str
     project_code: Optional[str] = None
     author:       str = ""
+
+class TranscribeSessionRequest(BaseModel):
+    session_id: str
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 def _get_conn():
@@ -87,7 +119,8 @@ def get_project_directory_cached(conn) -> list:
         _directory_cache["fetched_at"] = now
     return _directory_cache["data"]
 
-# ── Speech key via managed identity ──────────────────────────────────────────
+# ── Speech key via managed identity (mgmt plane) — cached, since chunked ────
+# ── live recording calls this far more often than the old one-shot flow did ─
 def _get_speech_key() -> str:
     """Retrieve Cognitive Services key using managed identity credentials."""
     from azure.identity import ManagedIdentityCredential
@@ -97,90 +130,160 @@ def _get_speech_key() -> str:
     keys   = client.accounts.list_keys(RESOURCE_GROUP, SPEECH_RESOURCE)
     return keys.key1
 
-# ── Blocking SDK transcription — run via executor ─────────────────────────────
-def _transcribe_sync(audio_path: str) -> tuple:
-    import azure.cognitiveservices.speech as speechsdk
+_speech_key_cache = {"key": None, "fetched_at": 0}
+_SPEECH_KEY_TTL_SECONDS = 1800  # 30 minutes
 
-    speech_key = _get_speech_key()
-    cfg = speechsdk.SpeechConfig(subscription=speech_key, region=SPEECH_REGION)
-    cfg.speech_recognition_language = "en-IN"
+def _get_speech_key_cached() -> str:
+    now = time.time()
+    if _speech_key_cache["key"] is None or (now - _speech_key_cache["fetched_at"]) > _SPEECH_KEY_TTL_SECONDS:
+        _speech_key_cache["key"] = _get_speech_key()
+        _speech_key_cache["fetched_at"] = now
+    return _speech_key_cache["key"]
 
-    auto_detect = speechsdk.languageconfig.AutoDetectSourceLanguageConfig(
-        languages=["en-IN", "hi-IN"]
-    )
-    audio_cfg  = speechsdk.audio.AudioConfig(filename=audio_path)
-    recognizer = speechsdk.SpeechRecognizer(
-        speech_config=cfg,
-        audio_config=audio_cfg,
-        auto_detect_source_language_config=auto_detect,
-    )
+def _speech_headers() -> dict:
+    return {"Ocp-Apim-Subscription-Key": _get_speech_key_cached()}
 
-    result = recognizer.recognize_once()
-
-    if result.reason == speechsdk.ResultReason.RecognizedSpeech:
-        lang = result.properties.get(
-            speechsdk.PropertyId.SpeechServiceConnection_AutoDetectSourceLanguageResult,
-            "en-IN",
-        )
-        return result.text, lang
-    elif result.reason == speechsdk.ResultReason.Canceled:
-        details = speechsdk.CancellationDetails.from_result(result)
-        raise RuntimeError(f"Speech recognition canceled: {details.error_details}")
-    else:
-        return "", str(result.reason)
-
-
-async def _transcribe_audio(audio_bytes: bytes, content_type: str) -> tuple:
-    # Determine file extension for temp file
-    ct = content_type.split(";")[0].strip().lower()
-    ext_map = {
-        "audio/wav":     ".wav",
-        "audio/webm":    ".webm",
-        "video/webm":    ".webm",
-        "audio/mp4":     ".mp4",
-        "audio/x-m4a":   ".mp4",
-        "audio/ogg":     ".ogg",
-        "audio/mpeg":    ".mp3",
-    }
-    suffix   = ext_map.get(ct, ".wav")
-    tmp_path = f"/tmp/{uuid.uuid4()}{suffix}"
-
+# ── Fast transcription — single short clip, synchronous (live preview only) ─
+async def _fast_transcribe_chunk(audio_bytes: bytes, filename: str, content_type: str = "application/octet-stream") -> dict:
+    """Best-effort transcription of ONE short chunk, for the live on-screen
+    preview only. This is never the authoritative transcript — that always
+    comes from the batch job in _assemble_batch_transcript. Returns {} on any
+    failure so a flaky preview call never blocks chunk storage or the meeting."""
+    definition = json.dumps({"locales": MEETING_LOCALES, "profanityFilterMode": "None"})
     try:
-        with open(tmp_path, "wb") as f:
-            f.write(audio_bytes)
-        loop = asyncio.get_event_loop()
-        text, lang = await loop.run_in_executor(None, _transcribe_sync, tmp_path)
-    finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post(
+                f"{SPEECH_DATA_ENDPOINT}/speechtotext/transcriptions:transcribe"
+                f"?api-version={SPEECH_API_VERSION}",
+                headers=_speech_headers(),
+                files={"audio": (filename, audio_bytes, content_type)},
+                data={"definition": definition},
+            )
+        if r.status_code != 200:
+            logger.warning(f"Fast transcription preview failed ({r.status_code}): {r.text[:300]}")
+            return {}
+        data    = r.json()
+        phrases = data.get("combinedPhrases") or []
+        text    = phrases[0].get("text", "") if phrases else ""
+        seg     = (data.get("phrases") or [{}])[0]
+        return {"text": text, "locale": seg.get("locale")}
+    except Exception as e:
+        logger.warning(f"Fast transcription preview error: {e}")
+        return {}
 
-    return text, lang
-
-# ── GPT call ──────────────────────────────────────────────────────────────────
-async def _call_gpt(system_prompt: str, user_content: str) -> str:
-    from azure.identity.aio import DefaultAzureCredential
-    cred  = DefaultAzureCredential()
-    token = await cred.get_token("https://cognitiveservices.azure.com/.default")
-    await cred.close()
-
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        r = await client.post(
-            f"{AOAI_ENDPOINT}/openai/deployments/{AOAI_DEPLOYMENT}/chat/completions"
-            f"?api-version={AOAI_API_VERSION}",
-            headers={"Authorization": f"Bearer {token.token}", "Content-Type": "application/json"},
-            json={
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": user_content},
-                ],
-                "max_tokens":  4096,
-                "temperature": 0.3,
+# ── Batch transcription — the authoritative path, no duration ceiling ───────
+async def _submit_batch_transcription(content_urls: list, display_name: str) -> str:
+    """Submit one job covering every chunk URL, in chronological order.
+    Returns the job's 'self' URL, used directly for polling."""
+    body = {
+        "displayName": display_name,
+        "locale": "en-IN",
+        "contentUrls": content_urls,
+        "properties": {
+            "languageIdentification": {
+                "candidateLocales": MEETING_LOCALES,
+                "mode": "Continuous",
             },
+            "punctuationMode": "DictatedAndAutomatic",
+            "profanityFilterMode": "None",
+            "timeToLiveHours": 48,
+        },
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(
+            f"{SPEECH_DATA_ENDPOINT}/speechtotext/transcriptions:submit"
+            f"?api-version={SPEECH_API_VERSION}",
+            headers={**_speech_headers(), "Content-Type": "application/json"},
+            json=body,
         )
+    if r.status_code != 201:
+        raise RuntimeError(f"Batch transcription submit failed ({r.status_code}): {r.text[:500]}")
+    return r.json()["self"]
+
+async def _get_transcription_job(job_url: str) -> dict:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(job_url, headers=_speech_headers())
+    r.raise_for_status()
+    return r.json()
+
+async def _assemble_batch_transcript(files_url: str) -> str:
+    """Fetch the files list, then every per-chunk result, in chunk order.
+    Result file names are contenturl_0.json, contenturl_1.json, ... matching
+    the order contentUrls were submitted in, so this reassembles the meeting
+    in the right order even though each chunk was transcribed independently."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(files_url, headers=_speech_headers())
         r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"]
+        files = [f for f in r.json().get("values", []) if f.get("kind") == "Transcription"]
+
+        def _idx(f):
+            m = re.search(r"contenturl_(\d+)", f.get("name", ""))
+            return int(m.group(1)) if m else 0
+        files.sort(key=_idx)
+
+        parts = []
+        for f in files:
+            content_url = f.get("links", {}).get("contentUrl")
+            if not content_url:
+                continue
+            cr = await client.get(content_url)
+            cr.raise_for_status()
+            phrases = cr.json().get("combinedPhrases") or []
+            parts.append(" ".join(p.get("text", "") for p in phrases))
+    return "\n\n".join(p for p in parts if p.strip())
+
+# ── Meeting audio blob storage + SAS ─────────────────────────────────────────
+async def _upload_audio_chunk(content: bytes, blob_path: str) -> None:
+    from azure.identity.aio import DefaultAzureCredential
+    from azure.storage.blob.aio import BlobServiceClient
+    account_url = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net"
+    cred = DefaultAzureCredential()
+    try:
+        async with BlobServiceClient(account_url=account_url, credential=cred) as svc:
+            try:
+                await svc.create_container(AUDIO_CONTAINER)
+            except Exception:
+                pass
+            await svc.get_blob_client(container=AUDIO_CONTAINER, blob=blob_path).upload_blob(content, overwrite=True)
+    finally:
+        await cred.close()
+
+def _list_audio_chunks(session_id: str) -> list:
+    """Blob names for a session, sorted by chunk index (chronological order)."""
+    from azure.storage.blob import BlobServiceClient
+    from azure.identity import ManagedIdentityCredential
+    account_url = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net"
+    svc   = BlobServiceClient(account_url=account_url, credential=ManagedIdentityCredential())
+    names = [b.name for b in svc.get_container_client(AUDIO_CONTAINER).list_blobs(name_starts_with=f"{session_id}/")]
+
+    def _chunk_index(name: str) -> int:
+        m = re.search(r"chunk_(\d+)", name)
+        return int(m.group(1)) if m else 0
+
+    names.sort(key=_chunk_index)
+    return names
+
+def _sas_url_for(blob_path: str, hours: int = 6) -> str:
+    """Read-only SAS URL — same user-delegation-key pattern already used for
+    report downloads in routers/report.py. Longer expiry (6h vs the report
+    endpoint's 1h) since a batch transcription job for a long meeting may take
+    a while to actually fetch and finish processing the audio."""
+    from azure.storage.blob import generate_blob_sas, BlobSasPermissions, BlobServiceClient
+    from azure.identity import ManagedIdentityCredential
+    account_url = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net"
+    svc    = BlobServiceClient(account_url=account_url, credential=ManagedIdentityCredential())
+    start  = datetime.utcnow() - timedelta(minutes=5)
+    expiry = datetime.utcnow() + timedelta(hours=hours)
+    delegation_key = svc.get_user_delegation_key(start, expiry)
+    sas = generate_blob_sas(
+        account_name=STORAGE_ACCOUNT,
+        container_name=AUDIO_CONTAINER,
+        blob_name=blob_path,
+        user_delegation_key=delegation_key,
+        permission=BlobSasPermissions(read=True),
+        expiry=expiry,
+    )
+    return f"{account_url}/{AUDIO_CONTAINER}/{blob_path}?{sas}"
 
 # ── Parse GPT section output ──────────────────────────────────────────────────
 SECTION_RE = re.compile(
@@ -228,6 +331,30 @@ def _strip_json_fence(text: str) -> str:
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"```\s*$", "", text)
     return text.strip()
+
+# ── GPT call ──────────────────────────────────────────────────────────────────
+async def _call_gpt(system_prompt: str, user_content: str) -> str:
+    from azure.identity.aio import DefaultAzureCredential
+    cred  = DefaultAzureCredential()
+    token = await cred.get_token("https://cognitiveservices.azure.com/.default")
+    await cred.close()
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        r = await client.post(
+            f"{AOAI_ENDPOINT}/openai/deployments/{AOAI_DEPLOYMENT}/chat/completions"
+            f"?api-version={AOAI_API_VERSION}",
+            headers={"Authorization": f"Bearer {token.token}", "Content-Type": "application/json"},
+            json={
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_content},
+                ],
+                "max_tokens":  4096,
+                "temperature": 0.3,
+            },
+        )
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
 
 # ── Word doc builder ──────────────────────────────────────────────────────────
 def _set_cell_shading(cell, hex_color: str):
@@ -324,7 +451,7 @@ def _build_meeting_report_docx(
     buf.seek(0)
     return buf.read()
 
-# ── Blob upload ───────────────────────────────────────────────────────────────
+# ── Blob upload (report docx) ─────────────────────────────────────────────────
 async def _upload_blob(content: bytes, blob_path: str) -> str:
     from azure.identity.aio import DefaultAzureCredential
     from azure.storage.blob.aio import BlobServiceClient
@@ -423,28 +550,115 @@ meaning. Output in English.
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+@router.post("/api/ai/meeting/audio/upload")
+async def upload_audio_chunk(
+    session_id: str      = Form(...),
+    index:      int       = Form(...),
+    audio:      UploadFile = File(...),
+):
+    """Store one audio chunk (either a ~60s slice of a live recording, or the
+    whole file for the 'upload a recording' path — that's just index=0 of a
+    one-chunk session). Also fires a best-effort single-chunk transcription
+    so the UI can show a live-ish rolling preview. The preview is never
+    authoritative; call /transcribe once recording stops for the real thing."""
+    audio_bytes  = await audio.read()
+    content_type = (audio.content_type or "audio/webm")
+    ct           = content_type.split(";")[0].strip().lower()
+    suffix       = _AUDIO_EXT_MAP.get(ct, ".webm")
+    blob_path    = f"{session_id}/chunk_{index:05d}{suffix}"
+
+    try:
+        await _upload_audio_chunk(audio_bytes, blob_path)
+    except Exception as e:
+        raise HTTPException(500, detail=f"Could not store audio chunk: {e}")
+
+    preview = {}
+    try:
+        preview = await _fast_transcribe_chunk(audio_bytes, f"chunk{suffix}", content_type)
+    except Exception as e:
+        logger.warning(f"Live preview transcription skipped: {e}")
+
+    return {
+        "stored":         True,
+        "index":          index,
+        "preview_text":   preview.get("text"),
+        "preview_locale": preview.get("locale"),
+    }
+
+
+@router.post("/api/ai/meeting/audio/transcribe")
+async def start_batch_transcription(req: TranscribeSessionRequest):
+    """Submit every stored chunk for this session as ONE batch transcription
+    job, in chronological order. Works identically whether the session has
+    one chunk (a whole uploaded file) or many (a live chunked recording) —
+    each contentUrl is transcribed independently and reassembled in order in
+    /status, so there's no file-size/duration ceiling either way."""
+    blob_names = _list_audio_chunks(req.session_id)
+    if not blob_names:
+        raise HTTPException(404, detail="No audio chunks found for this session.")
+
+    try:
+        content_urls = [_sas_url_for(name) for name in blob_names]
+        job_url = await _submit_batch_transcription(
+            content_urls, display_name=f"meeting-{req.session_id}"
+        )
+    except Exception as e:
+        raise HTTPException(502, detail=f"Could not start transcription: {e}")
+
+    return {"job_url": job_url, "chunk_count": len(blob_names)}
+
+
+@router.get("/api/ai/meeting/audio/status")
+async def get_transcription_status(job_url: str):
+    """Poll a batch transcription job. Once Succeeded, assembles and returns
+    the full ordered transcript text — this is the authoritative transcript,
+    ready to drop into /api/ai/meeting unchanged."""
+    try:
+        job = await _get_transcription_job(job_url)
+    except Exception as e:
+        raise HTTPException(502, detail=f"Could not check transcription status: {e}")
+
+    status = job.get("status")
+    if status == "Succeeded":
+        files_url = job.get("links", {}).get("files")
+        try:
+            transcript = await _assemble_batch_transcript(files_url)
+        except Exception as e:
+            raise HTTPException(502, detail=f"Transcription succeeded but result fetch failed: {e}")
+        return {"status": "Succeeded", "transcript": transcript}
+
+    if status == "Failed":
+        return {"status": "Failed", "error": job.get("properties", {}).get("error")}
+
+    return {"status": status or "Running"}
+
+
 @router.post("/api/ai/speech")
 async def transcribe_speech(
     audio:      Optional[UploadFile] = File(None),
     transcript: Optional[str]        = Form(None),
 ):
-    """Transcribe audio via Azure Speech SDK, or pass through a text transcript."""
+    """Legacy single-shot transcription via the Fast Transcription REST API.
+    Kept for back-compat and short clips only — fast transcription has its
+    own size/duration ceiling. For anything meeting-length, the dashboard now
+    uses /api/ai/meeting/audio/upload + /transcribe + /status instead."""
     if transcript:
         return {"transcript": transcript, "language_detected": "text"}
     if not audio:
         raise HTTPException(400, detail="Provide either an audio file or a transcript field.")
 
-    audio_bytes  = await audio.read()
-    content_type = audio.content_type or "audio/wav"
+    audio_bytes = await audio.read()
+    content_type = audio.content_type or "application/octet-stream"
 
     try:
-        text, lang = await _transcribe_audio(audio_bytes, content_type)
-    except RuntimeError as e:
-        raise HTTPException(502, detail=str(e))
+        result = await _fast_transcribe_chunk(audio_bytes, audio.filename or "audio.webm", content_type)
     except Exception as e:
         raise HTTPException(500, detail=f"Transcription failed: {e}")
 
-    return {"transcript": text, "language_detected": lang}
+    if not result:
+        raise HTTPException(502, detail="Transcription failed or returned no text. For longer recordings, use the chunked meeting flow instead.")
+
+    return {"transcript": result.get("text", ""), "language_detected": result.get("locale") or "unknown"}
 
 
 @router.post("/api/ai/meeting")

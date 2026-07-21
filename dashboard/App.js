@@ -836,9 +836,14 @@ function NoteCandidateCard({ item, onToggle, onTextChange, onProjectCodeChange }
 }
 
 function MeetingCopilotView({ user }) {
+  const CHUNK_MS = 60000; // restart-chunk every 60s — bounds data loss to one chunk, no duration ceiling
+
   const [isRecording, setIsRecording]         = useState(false);
+  const [elapsedSeconds, setElapsedSeconds]    = useState(0);
   const [transcript, setTranscript]           = useState('');
-  const [interimTranscript, setInterimTranscript] = useState('');
+  const [livePreview, setLivePreview]         = useState(''); // rolling, non-authoritative preview while recording
+  const [isTranscribing, setIsTranscribing]   = useState(false);
+  const [transcribeStatus, setTranscribeStatus] = useState('');
   const [projectCode, setProjectCode]         = useState('');
   const [audioFile, setAudioFile]             = useState(null);
   const [isGenerating, setIsGenerating]       = useState(false);
@@ -851,48 +856,169 @@ function MeetingCopilotView({ user }) {
   const [savingNotes, setSavingNotes]         = useState(false);
   const [saveResult, setSaveResult]           = useState(null);
   const [copySuccess, setCopySuccess]         = useState(false);
-  const recogRef                              = useRef(null);
   const transcriptRef                         = useRef(null);
+
+  // Live-recording plumbing — refs (not state) because timers/callbacks need
+  // the current value synchronously, without waiting for a re-render.
+  const sessionIdRef      = useRef(null);
+  const chunkIndexRef     = useRef(0);
+  const isRecordingRef    = useRef(false);
+  const streamRef         = useRef(null);
+  const mediaRecorderRef  = useRef(null);
+  const chunkTimerRef     = useRef(null);
+  const elapsedTimerRef   = useRef(null);
+  const pendingUploadsRef = useRef([]);
 
   // Auto-scroll transcript
   useEffect(() => {
     if (transcriptRef.current) transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
-  }, [transcript, interimTranscript]);
+  }, [transcript, livePreview]);
 
-  const startRecording = () => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { setError('Speech recognition not supported in this browser. Use Chrome or Edge.'); return; }
-    setError(null);
-    const recog = new SR();
-    recog.lang = 'en-IN';
-    recog.continuous = true;
-    recog.interimResults = true;
-    recog.onresult = (event) => {
-      let finalText = '', interimText = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        if (event.results[i].isFinal) finalText += event.results[i][0].transcript + ' ';
-        else interimText += event.results[i][0].transcript;
-      }
-      if (finalText) setTranscript(t => t + finalText);
-      setInterimTranscript(interimText);
+  // Stop mic + timers if the user navigates away mid-recording
+  useEffect(() => {
+    return () => {
+      isRecordingRef.current = false;
+      if (chunkTimerRef.current) clearTimeout(chunkTimerRef.current);
+      if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+      streamRef.current?.getTracks().forEach(t => t.stop());
     };
-    recog.onerror  = (e) => { setError(`Mic error: ${e.error}`); setIsRecording(false); };
-    recog.onend    = () => { setIsRecording(false); setInterimTranscript(''); };
-    recog.start();
-    recogRef.current = recog;
-    setIsRecording(true);
+  }, []);
+
+  // Upload one chunk (a ~60s slice of a live recording, or a whole uploaded
+  // file as chunk 0) and fire a best-effort preview transcription of it.
+  const uploadChunk = async (blob, sessionId, idx) => {
+    const fd = new FormData();
+    fd.append('session_id', sessionId);
+    fd.append('index', String(idx));
+    fd.append('audio', blob, `chunk_${idx}.webm`);
+    const res = await fetch(`${API_BASE}/api/ai/meeting/audio/upload`, { method: 'POST', body: fd });
+    if (!res.ok) throw new Error(`Chunk upload failed (HTTP ${res.status})`);
+    return res.json();
   };
 
-  const stopRecording = () => {
-    recogRef.current?.stop();
+  // Submit every chunk for a session as one batch job, then poll until done.
+  // Shared by both the live-recording path and the upload-a-file path.
+  const runBatchTranscription = async (sessionId, onStatus) => {
+    onStatus?.('Starting transcription…');
+    const startRes = await fetch(`${API_BASE}/api/ai/meeting/audio/transcribe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId }),
+    });
+    if (!startRes.ok) throw new Error(`Could not start transcription (HTTP ${startRes.status})`);
+    const { job_url, chunk_count } = await startRes.json();
+    onStatus?.(`Transcribing ${chunk_count} chunk${chunk_count === 1 ? '' : 's'}… this can take a few minutes for longer recordings.`);
+
+    const startedAt   = Date.now();
+    const MAX_WAIT_MS = 30 * 60 * 1000; // 30 min ceiling — generous for even very long meetings
+    while (Date.now() - startedAt < MAX_WAIT_MS) {
+      await new Promise(r => setTimeout(r, 5000));
+      const statusRes = await fetch(`${API_BASE}/api/ai/meeting/audio/status?job_url=${encodeURIComponent(job_url)}`);
+      if (!statusRes.ok) throw new Error(`Status check failed (HTTP ${statusRes.status})`);
+      const data = await statusRes.json();
+      if (data.status === 'Succeeded') return data.transcript;
+      if (data.status === 'Failed') throw new Error('Transcription failed on the Speech service side.');
+      onStatus?.(`Transcribing… (${Math.round((Date.now() - startedAt) / 1000)}s elapsed)`);
+    }
+    throw new Error('Transcription is taking longer than expected — check back in a few minutes.');
+  };
+
+  // Records ~60s, uploads it, then immediately arms the next one on the same
+  // stream. Each chunk is a fresh, independently-valid webm file (that's WHY
+  // we restart the recorder instead of using one long MediaRecorder session
+  // with a timeslice — mid-stream timeslice chunks aren't reliably
+  // standalone-decodable, but a fresh start()/stop() always is).
+  const armNextChunk = (stream, sessionId) => {
+    let mimeType = 'audio/webm';
+    if (window.MediaRecorder?.isTypeSupported?.('audio/webm;codecs=opus')) mimeType = 'audio/webm;codecs=opus';
+    const rec = new MediaRecorder(stream, { mimeType });
+    const localParts = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size > 0) localParts.push(e.data); };
+    rec.onstop = () => {
+      const blob = new Blob(localParts, { type: mimeType });
+      const idx  = chunkIndexRef.current++;
+      const p = uploadChunk(blob, sessionId, idx)
+        .then(data => {
+          if (data.preview_text) {
+            setLivePreview(prev => (prev ? prev + ' ' : '') + data.preview_text);
+          }
+        })
+        .catch(e => console.warn('Chunk upload failed (will be missing from the final transcript):', e));
+      pendingUploadsRef.current.push(p);
+      if (isRecordingRef.current) armNextChunk(stream, sessionId);
+    };
+    rec.start();
+    mediaRecorderRef.current = rec;
+    chunkTimerRef.current = setTimeout(() => {
+      if (rec.state !== 'inactive') rec.stop();
+    }, CHUNK_MS);
+  };
+
+  // Stops the current recorder and resolves only once its onstop handler
+  // (which enqueues the chunk's upload promise) has actually run.
+  const stopCurrentRecorder = () => new Promise((resolve) => {
+    const rec = mediaRecorderRef.current;
+    if (!rec || rec.state === 'inactive') { resolve(); return; }
+    const prevOnStop = rec.onstop;
+    rec.onstop = (ev) => { try { prevOnStop?.(ev); } finally { resolve(); } };
+    rec.stop();
+  });
+
+  const startRecording = async () => {
+    setError(null);
+    if (!window.MediaRecorder || !navigator.mediaDevices?.getUserMedia) {
+      setError('Recording needs a browser with microphone + MediaRecorder support — Chrome, Edge, or Firefox.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current       = stream;
+      sessionIdRef.current    = crypto.randomUUID();
+      chunkIndexRef.current   = 0;
+      pendingUploadsRef.current = [];
+      setTranscript(''); setLivePreview(''); setReportUrl(null); setReportMeta(null);
+      setElapsedSeconds(0);
+      isRecordingRef.current = true;
+      setIsRecording(true);
+      elapsedTimerRef.current = setInterval(() => setElapsedSeconds(s => s + 1), 1000);
+      armNextChunk(stream, sessionIdRef.current);
+    } catch (e) {
+      setError(`Could not access microphone: ${e.message}`);
+    }
+  };
+
+  const stopRecording = async () => {
+    isRecordingRef.current = false;
     setIsRecording(false);
-    setInterimTranscript('');
+    if (chunkTimerRef.current) clearTimeout(chunkTimerRef.current);
+    if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+
+    await stopCurrentRecorder();
+    streamRef.current?.getTracks().forEach(t => t.stop());
+
+    setIsTranscribing(true); setTranscribeStatus('Finishing up…');
+    try {
+      await Promise.all(pendingUploadsRef.current);
+      const finalTranscript = await runBatchTranscription(sessionIdRef.current, setTranscribeStatus);
+      setTranscript(finalTranscript);
+      setLivePreview('');
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setIsTranscribing(false);
+      setTranscribeStatus('');
+    }
   };
 
   const clearAll = () => {
-    stopRecording();
-    setTranscript(''); setInterimTranscript(''); setProjectCode('');
+    isRecordingRef.current = false;
+    if (chunkTimerRef.current) clearTimeout(chunkTimerRef.current);
+    if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    setIsRecording(false); setElapsedSeconds(0);
+    setTranscript(''); setLivePreview(''); setProjectCode('');
     setAudioFile(null); setReportUrl(null); setReportMeta(null); setError(null);
+    setIsTranscribing(false); setTranscribeStatus('');
     setNoteItems([]); setEmailSubject(''); setEmailBody('');
     setSaveResult(null); setCopySuccess(false);
   };
@@ -906,13 +1032,12 @@ function MeetingCopilotView({ user }) {
     try {
       let finalTranscript = transcript;
       if (audioFile && !transcript.trim()) {
-        const fd = new FormData();
-        fd.append('audio', audioFile);
-        const res = await fetch(`${API_BASE}/api/ai/speech`, { method: 'POST', body: fd });
-        if (!res.ok) throw new Error(`Transcription failed (HTTP ${res.status})`);
-        const data = await res.json();
-        finalTranscript = data.transcript;
+        setIsTranscribing(true); setTranscribeStatus('Uploading audio file…');
+        const sessionId = crypto.randomUUID();
+        await uploadChunk(audioFile, sessionId, 0);
+        finalTranscript = await runBatchTranscription(sessionId, setTranscribeStatus);
         setTranscript(finalTranscript);
+        setIsTranscribing(false); setTranscribeStatus('');
       }
       const data = await apiFetch('/api/ai/meeting', {
         method: 'POST',
@@ -937,6 +1062,7 @@ function MeetingCopilotView({ user }) {
       setCopySuccess(false);
     } catch (e) {
       setError(e.message);
+      setIsTranscribing(false); setTranscribeStatus('');
     } finally {
       setIsGenerating(false);
     }
@@ -998,24 +1124,30 @@ function MeetingCopilotView({ user }) {
     }
   };
 
+  const fmtElapsed = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+  const displayTranscript = transcript || livePreview;
+  const generateDisabled  = isGenerating || isTranscribing || isRecording || (!transcript.trim() && !audioFile);
+
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '0 28px 28px', background: C.white }}>
-      <PageHeader title="Meeting Copilot" sub="Speak your R&D meeting — get a chemistry analysis report" />
+      <PageHeader title="Meeting Copilot" sub="Speak your R&D meeting — English, Hindi, or Hinglish — get a chemistry analysis report" />
 
       <div style={{ display: 'flex', gap: '28px', flexWrap: 'wrap', maxWidth: '960px' }}>
 
-        {/* LEFT — recording + live transcript */}
+        {/* LEFT — recording + transcript */}
         <div style={{ flex: 1, minWidth: '340px' }}>
           {/* Mic button */}
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', marginBottom: '22px' }}>
             <button
               onClick={isRecording ? stopRecording : startRecording}
+              disabled={isTranscribing}
               style={{
                 width: '80px', height: '80px', borderRadius: '50%',
                 background: isRecording ? '#c0392b' : C.navy,
                 border: `3px solid ${isRecording ? '#e74c3c' : C.cyan}`,
                 color: C.white,
-                fontSize: '28px', cursor: 'pointer',
+                fontSize: '28px', cursor: isTranscribing ? 'default' : 'pointer',
+                opacity: isTranscribing ? 0.5 : 1,
                 boxShadow: isRecording ? '0 0 0 10px rgba(192,57,43,0.2)' : '0 4px 18px rgba(0,11,54,0.25)',
                 transition: 'all 0.2s',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -1024,27 +1156,33 @@ function MeetingCopilotView({ user }) {
               {isRecording ? '⏹' : '⏺'}
             </button>
             <div style={{ color: isRecording ? '#c0392b' : C.textDim, fontFamily: FONT, fontSize: '12px', fontWeight: 600 }}>
-              {isRecording ? '● Recording — click to stop' : 'Click to record (Chrome/Edge)'}
+              {isRecording
+                ? `● Recording — ${fmtElapsed(elapsedSeconds)} — click to stop`
+                : isTranscribing
+                  ? (transcribeStatus || 'Transcribing…')
+                  : 'Click to record — any length, no time limit'}
             </div>
           </div>
 
           {/* Upload audio */}
           <div style={{ color: C.blue, fontFamily: FONT, fontSize: '11px', fontWeight: 700, letterSpacing: '1px', marginBottom: '6px' }}>OR UPLOAD AUDIO FILE</div>
           <label style={{ display: 'block', background: C.ice, border: `1.5px dashed ${C.border}`, borderRadius: '6px', padding: '10px 14px', cursor: 'pointer', textAlign: 'center', fontFamily: FONT, fontSize: '12px', color: C.textDim, marginBottom: '18px' }}>
-            <input type="file" accept=".wav,.webm,.mp4,.m4a,.ogg,audio/*" onChange={e => setAudioFile(e.target.files[0])} style={{ display: 'none' }} />
-            {audioFile ? <span style={{ color: C.blue, fontWeight: 600 }}>{audioFile.name}</span> : '📎 .wav  .webm  .mp4  .m4a  .ogg'}
+            <input type="file" accept=".wav,.webm,.mp4,.m4a,.ogg,audio/*" onChange={e => setAudioFile(e.target.files[0])} style={{ display: 'none' }} disabled={isRecording || isTranscribing} />
+            {audioFile ? <span style={{ color: C.blue, fontWeight: 600 }}>{audioFile.name}</span> : '📎 .wav  .webm  .mp4  .m4a  .ogg — any length'}
           </label>
 
-          {/* Live transcript */}
-          <div style={{ color: C.blue, fontFamily: FONT, fontSize: '11px', fontWeight: 700, letterSpacing: '1px', marginBottom: '6px' }}>TRANSCRIPT <span style={{ fontWeight: 400, color: C.textSub }}>({transcript.length} chars)</span></div>
+          {/* Transcript */}
+          <div style={{ color: C.blue, fontFamily: FONT, fontSize: '11px', fontWeight: 700, letterSpacing: '1px', marginBottom: '6px' }}>
+            TRANSCRIPT <span style={{ fontWeight: 400, color: C.textSub }}>({displayTranscript.length} chars{!transcript && livePreview ? ' · live preview, draft only' : ''})</span>
+          </div>
           <div
             ref={transcriptRef}
             style={{ background: C.ice, border: `1.5px solid ${C.border}`, borderRadius: '8px', padding: '12px 14px', minHeight: '200px', maxHeight: '400px', overflowY: 'auto', fontFamily: FONT, fontSize: '13px', lineHeight: '1.7', color: C.blue }}
           >
             {transcript && <span style={{ color: C.navy }}>{transcript}</span>}
-            {interimTranscript && <span style={{ color: C.textDim, fontStyle: 'italic' }}>{interimTranscript}</span>}
-            {!transcript && !interimTranscript && (
-              <span style={{ color: C.textSub, fontStyle: 'italic' }}>Transcript appears here as you speak, or paste directly…</span>
+            {!transcript && livePreview && <span style={{ color: C.textDim, fontStyle: 'italic' }}>{livePreview}</span>}
+            {!transcript && !livePreview && (
+              <span style={{ color: C.textSub, fontStyle: 'italic' }}>Transcript appears here once recording stops, or paste directly…</span>
             )}
           </div>
           {/* Allow manual edit */}
@@ -1053,6 +1191,7 @@ function MeetingCopilotView({ user }) {
             onChange={e => setTranscript(e.target.value)}
             placeholder="Paste or edit transcript here…"
             rows={3}
+            disabled={isRecording || isTranscribing}
             style={{ width: '100%', boxSizing: 'border-box', marginTop: '8px', background: C.white, border: `1.5px solid ${C.borderMid}`, borderRadius: '6px', padding: '10px 14px', color: C.blue, fontFamily: FONT, fontSize: '12px', lineHeight: '1.5', resize: 'vertical', outline: 'none' }}
           />
         </div>
@@ -1069,17 +1208,17 @@ function MeetingCopilotView({ user }) {
 
           <button
             onClick={generateReport}
-            disabled={isGenerating || (!transcript.trim() && !audioFile)}
+            disabled={generateDisabled}
             style={{
-              width: '100%', background: isGenerating ? C.ice : C.navy,
-              border: 'none', color: isGenerating ? C.textDim : C.white,
+              width: '100%', background: generateDisabled ? C.ice : C.navy,
+              border: 'none', color: generateDisabled ? C.textDim : C.white,
               borderRadius: '8px', padding: '13px', fontFamily: FONT, fontSize: '14px',
-              fontWeight: 700, cursor: isGenerating || (!transcript.trim() && !audioFile) ? 'default' : 'pointer',
-              boxShadow: isGenerating ? 'none' : '0 3px 12px rgba(0,11,54,0.2)',
+              fontWeight: 700, cursor: generateDisabled ? 'default' : 'pointer',
+              boxShadow: generateDisabled ? 'none' : '0 3px 12px rgba(0,11,54,0.2)',
               transition: 'all 0.15s', marginBottom: '10px',
             }}
           >
-            {isGenerating ? '⏳ Generating…' : '⚗ Generate Report'}
+            {isTranscribing ? '⏳ Transcribing…' : isGenerating ? '⏳ Generating…' : '⚗ Generate Report'}
           </button>
 
           <button
@@ -1110,7 +1249,7 @@ function MeetingCopilotView({ user }) {
           {/* Instructions */}
           <div style={{ background: C.ice, border: `1.5px solid ${C.border}`, borderRadius: '8px', padding: '14px 16px', fontFamily: FONT, fontSize: '12px', color: C.blue, lineHeight: '1.7' }}>
             <div style={{ color: C.navy, fontWeight: 700, marginBottom: '6px', fontSize: '11px', letterSpacing: '0.5px' }}>HOW TO USE</div>
-            Start recording and speak naturally. English, Hindi, or Hinglish all work. Describe the problem, hypotheses, and what experiments you want to run. Stop recording when done, then click Generate Report.
+            Start recording and speak naturally — English, Hindi, or Hinglish all work, and there's no time limit. The transcript appears once you stop recording (a short "live preview" shows while you talk, but the real transcript is generated after). Stop recording when done, then click Generate Report.
           </div>
         </div>
       </div>
