@@ -175,11 +175,15 @@ async def main():
     print("Patched agent_v2.get_foundry_token -> az-CLI-based test token fetch")
     print("Patched agent_v2.dispatch_tool -> safety wrapper (update_project_notes intercepted)")
 
-    # Temporary — forces the primary agent attempt to fail, so this run
-    # exercises the AGENT_NAME_V2_FALLBACK retry path. AGENT_NAME_V2_FALLBACK
-    # is left untouched, still pointing at the real "eln-agent-v2-test-fallback".
-    agent_v2.AGENT_NAME_V2 = "eln-agent-v2-test-DOES-NOT-EXIST"
-    print(f"Patched agent_v2.AGENT_NAME_V2 -> {agent_v2.AGENT_NAME_V2!r} (forces primary-agent failure, to exercise the fallback retry)")
+    # Opt-in only — set FORCE_FAILURE=1 to deliberately break the primary
+    # agent name and exercise the AGENT_NAME_V2_FALLBACK retry path instead.
+    # Previously this was unconditional (always broken); gated here so this
+    # script is usable for normal round-trip testing by default again.
+    if os.environ.get("FORCE_FAILURE", "").lower() in ("1", "true", "yes"):
+        agent_v2.AGENT_NAME_V2 = "eln-agent-v2-test-DOES-NOT-EXIST"
+        print(f"FORCE_FAILURE set — patched agent_v2.AGENT_NAME_V2 -> {agent_v2.AGENT_NAME_V2!r} (forces primary-agent failure, to exercise the fallback retry)")
+    else:
+        print(f"Using real agent_v2.AGENT_NAME_V2 -> {agent_v2.AGENT_NAME_V2!r} (primary agent). Set FORCE_FAILURE=1 to test the fallback retry path instead.")
     print()
 
     request = agent_v2.ChatRequest(
