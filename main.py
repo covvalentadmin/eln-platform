@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 import pyodbc
 
-from routers import search, fetch, agent, literature, report, meeting, upload
+from routers import search, fetch, agent_v2, literature, report, meeting, upload
 
 app = FastAPI(title="ELN Intelligence API", version="2.3.0")
 
@@ -23,7 +23,7 @@ app.add_middleware(
 
 app.include_router(search.router)
 app.include_router(fetch.router)
-app.include_router(agent.router)
+app.include_router(agent_v2.router)
 app.include_router(literature.router)
 app.include_router(report.router)
 app.include_router(meeting.router)
