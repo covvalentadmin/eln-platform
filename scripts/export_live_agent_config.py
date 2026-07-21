@@ -31,8 +31,8 @@ FOUNDRY_API_VER = os.environ.get("FOUNDRY_API_VERSION", "2025-05-15-preview")
 AGENT_ID        = os.environ.get("AGENT_ID", "asst_iujfiErrYF9CfqgyB6BqY4Xn")
 
 REPO_ROOT                 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-TOOLS_OUTPUT_PATH         = os.path.join(REPO_ROOT, "live_agent_tools_export.json")
-INSTRUCTIONS_OUTPUT_PATH  = os.path.join(REPO_ROOT, "live_agent_instructions_export.txt")
+TOOLS_OUTPUT_PATH         = os.path.join(REPO_ROOT, "prompts", "agent_tools_current_export.json")
+INSTRUCTIONS_OUTPUT_PATH  = os.path.join(REPO_ROOT, "prompts", "system_prompt_current_export.txt")
 
 
 def get_token() -> str:
