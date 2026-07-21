@@ -66,10 +66,17 @@ TOOLS = [
 ]
 
 # ── Schema ────────────────────────────────────────────────────────────────────
+class Attachment(BaseModel):
+    filename: str
+    summary: str
+    truncated: bool = False
+
+
 class ChatRequest(BaseModel):
     message: str
     thread_id: Optional[str] = None
     user_email: Optional[str] = None
+    attachments: Optional[list[Attachment]] = None
 
 class ChatResponse(BaseModel):
     answer: str
@@ -336,9 +343,19 @@ async def chat(request: ChatRequest):
 
         # ── 2. Add user message ───────────────────────────────────────────────
         try:
+            message_content = request.message
+            if request.attachments:
+                blocks = []
+                for att in request.attachments:
+                    block = f"--- Attached document: {att.filename} ---\n{att.summary}"
+                    if att.truncated:
+                        block += "\n[Note: summary truncated due to length]"
+                    block += "\n--- End ---"
+                    blocks.append(block)
+                message_content = "\n\n".join(blocks) + "\n\n" + request.message
             r = await foundry_client.post(
                 f"{base_url}/threads/{thread_id}/messages?api-version={FOUNDRY_API_VER}",
-                json={"role": "user", "content": request.message}
+                json={"role": "user", "content": message_content}
             )
             r.raise_for_status()
         except Exception as e:
