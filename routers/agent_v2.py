@@ -553,6 +553,7 @@ async def chat(request: ChatRequest):
                 blocks.append(block)
             message_content = "\n\n".join(blocks) + "\n\n" + request.message
         message_items = [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": message_content}]}]
+        print(f"chat(): outgoing message_content ({len(message_content)} chars): {message_content!r}")
         try:
             if request.thread_id:
                 conversation_id = request.thread_id
@@ -570,11 +571,11 @@ async def chat(request: ChatRequest):
             # retrying the identical request will fail identically every
             # time; a 5xx means Foundry's own service had a problem, which is
             # genuinely transient/retryable.
+            print(f"chat(): session creation got HTTP {e.response.status_code} from Foundry, full body: {e.response.text!r}")
             try:
                 err_detail = e.response.json().get("error", {}).get("message", str(e))
             except Exception:
                 err_detail = str(e)
-            print(f"chat(): session creation got HTTP {e.response.status_code} from Foundry: {err_detail}")
             if 400 <= e.response.status_code < 500:
                 raise HTTPException(e.response.status_code, detail=f"AI service rejected the request: {err_detail}")
             raise HTTPException(503, detail=f"AI service error: {err_detail}")
