@@ -202,7 +202,7 @@ export default function AIChatPanel({ onClose, user }) {
         return;
       }
       const data = await res.json();
-      setAttachedFile({ filename: data.filename, summary: data.summary, truncated: data.truncated });
+      setAttachedFile({ filename: data.filename, summary: data.summary, truncated: data.truncated, used_ocr: data.used_ocr });
     } catch (err) {
       alert('Upload error: ' + err.message);
     }
@@ -368,7 +368,7 @@ export default function AIChatPanel({ onClose, user }) {
         <div style={{ maxWidth: '860px', margin: '0 auto' }}>
           {attachedFile && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: C.ice, border: `1.5px solid ${C.cyan}`, borderRadius: '6px', padding: '4px 10px', marginBottom: '6px', fontSize: '11px', color: C.textDim, fontFamily: FONT }}>
-              📎 {attachedFile.filename}{attachedFile.truncated ? ' (truncated)' : ''}
+              📎 {attachedFile.filename}{attachedFile.used_ocr ? ' (via OCR)' : ''}{attachedFile.truncated ? ' (truncated)' : ''}
               <button onClick={() => setAttachedFile(null)} aria-label="Remove attachment" style={{ background: 'transparent', border: 'none', color: C.textDim, cursor: 'pointer', fontSize: '13px', marginLeft: '4px', fontFamily: FONT }}>✕</button>
             </div>
           )}

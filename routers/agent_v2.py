@@ -547,6 +547,8 @@ async def chat(request: ChatRequest):
             blocks = []
             for att in request.attachments:
                 block = f"--- Attached document: {att.filename} ---\n{att.summary}"
+                if att.used_ocr:
+                    block += "\n[Note: text recovered via OCR, not a native text layer — verify anything critical]"
                 if att.truncated:
                     block += "\n[Note: summary truncated due to length]"
                 block += "\n--- End ---"

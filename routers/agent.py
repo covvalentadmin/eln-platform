@@ -70,6 +70,7 @@ class Attachment(BaseModel):
     filename: str
     summary: str
     truncated: bool = False
+    used_ocr: bool = False
 
 
 class ChatRequest(BaseModel):
