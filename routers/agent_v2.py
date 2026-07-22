@@ -447,6 +447,7 @@ async def generate_response(agent_name, conversation_id, foundry_client, tool_cl
             last_error = err_body.get("error") or {"code": "server_error", "message": str(e)}
             return "failed", {"error": last_error}
         except Exception as e:
+            print(f"generate_response: unexpected failure calling Foundry: {type(e).__name__}: {e}")
             raise HTTPException(503, detail=f"Failed to reach AI service: {str(e)}")
 
         response = r.json()
@@ -558,9 +559,27 @@ async def chat(request: ChatRequest):
                 await _conversation_items_create(foundry_client, base_url, conversation_id, message_items)
             else:
                 conversation_id = await _conversations_create(foundry_client, base_url, message_items)
-        except httpx.TimeoutException:
+        except httpx.TimeoutException as e:
+            print(f"chat(): session creation timed out: {e}")
             raise HTTPException(503, detail="Could not connect to AI service — please retry")
+        except httpx.HTTPStatusError as e:
+            # Foundry was reached and responded — this is NOT the same failure
+            # mode as a connection/timeout issue, so it shouldn't be flattened
+            # into the same generic 503. A 4xx here means Foundry rejected the
+            # request itself (e.g. malformed conversation/item body) and
+            # retrying the identical request will fail identically every
+            # time; a 5xx means Foundry's own service had a problem, which is
+            # genuinely transient/retryable.
+            try:
+                err_detail = e.response.json().get("error", {}).get("message", str(e))
+            except Exception:
+                err_detail = str(e)
+            print(f"chat(): session creation got HTTP {e.response.status_code} from Foundry: {err_detail}")
+            if 400 <= e.response.status_code < 500:
+                raise HTTPException(e.response.status_code, detail=f"AI service rejected the request: {err_detail}")
+            raise HTTPException(503, detail=f"AI service error: {err_detail}")
         except Exception as e:
+            print(f"chat(): session creation failed unexpectedly: {type(e).__name__}: {e}")
             raise HTTPException(503, detail=f"Failed to create session: {str(e)}")
 
         # ── 2-4. Generate a response, looping over tool calls (with fallback

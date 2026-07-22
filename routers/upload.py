@@ -29,6 +29,11 @@ ALLOWED_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".csv"}
 MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024  # 15MB
 MAX_SUMMARY_CHARS = 28000  # ~6-8K tokens at ~4 chars/token
 MAX_ROWS_PREVIEW = 10
+MIN_CHARS_PER_PAGE = 50  # below this average, treat extraction as unreliable —
+                          # a real text page normally runs into the hundreds+
+                          # of characters; PDFs whose body content is vector-
+                          # drawn (tables/diagrams with no real text layer,
+                          # only incidental headings) land far below this
 
 
 class UploadResponse(BaseModel):
@@ -63,6 +68,18 @@ def _parse_pdf(file_bytes: bytes) -> str:
             f"PDF has {num_pages} page(s) but text extraction returned no "
             "content — this looks like a scanned/image-based PDF. OCR is "
             "not yet implemented; only a text layer can be read at this time."
+        )
+
+    avg_chars_per_page = len(full_text) / num_pages if num_pages else 0
+    if avg_chars_per_page < MIN_CHARS_PER_PAGE:
+        return (
+            f"PDF has {num_pages} page(s) but text extraction returned only "
+            f"{len(full_text)} characters total — most of this document is "
+            "likely vector-drawn (tables, diagrams, or scanned content) "
+            "rather than real embedded text, so the body content could not "
+            "be reliably read. Only incidental text (e.g. headings) was "
+            "found. OCR is not yet implemented. What little text WAS "
+            f"extracted:\n\n{full_text}"
         )
 
     return f"PDF text extract ({num_pages} page(s)):\n\n{full_text}"

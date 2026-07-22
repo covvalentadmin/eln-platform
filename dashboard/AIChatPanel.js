@@ -85,6 +85,11 @@ function classifyError(status, detail) {
     const clean = detail ? detail.replace(/^Agent run (failed|cancelled|expired):\s*/i, '') : '';
     return { message: clean || 'The agent encountered an error. Try rephrasing your question.', retryable: false, icon: '⚠' };
   }
+  if (status >= 400 && status < 500) {
+    // The backend rejected the request itself (not a connectivity issue) —
+    // retrying the identical request will fail the same way again.
+    return { message: detail || 'The request could not be processed.', retryable: false, icon: '⚠' };
+  }
   return { message: detail || 'Something went wrong. Please try again.', retryable: true, icon: '⚠' };
 }
 
