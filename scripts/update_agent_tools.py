@@ -58,6 +58,10 @@ NEW_TOOLS = [
                         "type": "string",
                         "enum": ["decision", "data_point"],
                         "description": "'decision' for strategic/process context (route abandoned, project on hold, key learning). 'data_point' for a specific reported number or correction (a yield, purity, or other measured value not yet confirmed in ELN) — set this whenever exp_number_full is also set."
+                    },
+                    "source_upload_filename": {
+                        "type": "string",
+                        "description": "REQUIRED whenever this note is derived from attached-document content (a file uploaded in this chat session). Set to the exact filename from the '--- Attached document: [filename] ---' block. Leave unset for notes not derived from an attachment. When set, note_type MUST be 'data_point' regardless of how the content reads, since it has not been validated against ELN's own records."
                     }
                 },
                 "required": ["project_code", "note_text"]

@@ -46,6 +46,7 @@ class NoteRequest(BaseModel):
     exp_number_full: Optional[str] = None
     note_type: str = "decision"
     source_report_id: Optional[int] = None
+    source_upload_filename: Optional[str] = None
 
 def _extract_summary(analysis_text: str, max_chars: int = 800) -> str:
     """
@@ -610,9 +611,9 @@ def create_note(req: NoteRequest):
     conn = _get_conn()
     cur  = conn.cursor()
     cur.execute(
-        "INSERT INTO eln_project_notes (project_code, note_text, captured_from, author, exp_number_full, note_type, source_report_id) "
-        "OUTPUT INSERTED.note_id, INSERTED.created_date VALUES (?,?,?,?,?,?,?)",
-        req.project_code, req.note_text, req.captured_from, req.author, req.exp_number_full, req.note_type, req.source_report_id
+        "INSERT INTO eln_project_notes (project_code, note_text, captured_from, author, exp_number_full, note_type, source_report_id, source_upload_filename) "
+        "OUTPUT INSERTED.note_id, INSERTED.created_date VALUES (?,?,?,?,?,?,?,?)",
+        req.project_code, req.note_text, req.captured_from, req.author, req.exp_number_full, req.note_type, req.source_report_id, req.source_upload_filename
     )
     row = cur.fetchone()
     note_id      = row[0]
@@ -626,6 +627,7 @@ def create_note(req: NoteRequest):
         "exp_number_full": req.exp_number_full,
         "note_type": req.note_type,
         "source_report_id": req.source_report_id,
+        "source_upload_filename": req.source_upload_filename,
     }
 
 
@@ -636,7 +638,7 @@ def get_notes(project_code: str):
     cur  = conn.cursor()
     cur.execute(
         "SELECT note_id, note_text, author, created_date, captured_from, "
-        "exp_number_full, note_type, verified, source_report_id "
+        "exp_number_full, note_type, verified, source_report_id, source_upload_filename "
         "FROM eln_project_notes WHERE project_code = ? AND is_deleted = 0 "
         "ORDER BY created_date DESC",
         project_code
