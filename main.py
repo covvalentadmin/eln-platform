@@ -73,6 +73,39 @@ def health_sql():
     except Exception as e:
         raise HTTPException(500, detail=str(e))
 
+# ── TEMPORARY — AIE-407 one-shot migration, remove after confirmed success ────
+# Adds source_upload_filename to eln_project_notes (see sql/AIE_407_notes_upload_source.sql).
+# Idempotent (guarded by IF NOT EXISTS) and narrowly scoped to this one column —
+# not a general SQL-execution endpoint. Exists only because Cloud Shell has no
+# VNet path to ELL-VM and this App Service already does, via the same get_conn()
+# every other endpoint here already uses. Delete this block once confirmed.
+@app.post("/api/dev/migrate/aie407")
+def migrate_aie407(confirm: str = Query(default="")):
+    if confirm != "yes":
+        raise HTTPException(400, detail="Pass ?confirm=yes to run this migration.")
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.columns
+                WHERE object_id = OBJECT_ID('eln_project_notes') AND name = 'source_upload_filename'
+            )
+            BEGIN
+                ALTER TABLE eln_project_notes ADD source_upload_filename NVARCHAR(255) NULL;
+            END
+        """)
+        conn.commit()
+        cur.execute(
+            "SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('eln_project_notes') "
+            "AND name = 'source_upload_filename'"
+        )
+        column_exists = cur.fetchone() is not None
+        conn.close()
+        return {"column_exists_after_migration": column_exists}
+    except Exception as e:
+        raise HTTPException(500, detail=str(e))
+
 # ── Schema inspection (dev) ───────────────────────────────────────────────────
 @app.get("/api/dev/schema/{table_name}")
 def get_schema(table_name: str):
