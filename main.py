@@ -93,6 +93,23 @@ def get_schema(table_name: str):
     except Exception as e:
         raise HTTPException(500, detail=str(e))
 
+# TEMPORARY — remove after checking the number.
+@app.get("/api/dev/notes-check")
+def notes_check():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*) AS total_notes, COUNT(DISTINCT project_code) AS distinct_projects
+            FROM eln_project_notes
+        """)
+        cols = [c[0] for c in cur.description]
+        row = dict(zip(cols, cur.fetchone()))
+        conn.close()
+        return row
+    except Exception as e:
+        raise HTTPException(500, detail=str(e))
+
 # ── Projects ──────────────────────────────────────────────────────────────────
 @app.get("/api/projects")
 def get_projects():
