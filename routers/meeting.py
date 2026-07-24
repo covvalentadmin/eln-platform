@@ -1,8 +1,97 @@
 """
 routers/meeting.py — ELN Meeting Copilot
-POST /api/ai/speech          — audio transcription via Azure Speech SDK
-POST /api/ai/meeting         — transcript → structured report → Word doc → blob
-GET  /api/ai/meeting/reports — list all meeting reports
+POST /api/ai/speech              — audio transcription via Azure AI Speech
+                                    Fast Transcription REST API (external
+                                    contract unchanged: {"transcript":...,
+                                    "language_detected":...} or pass-through
+                                    of a text transcript)
+POST /api/ai/meeting              — transcript -> structured report -> Word
+                                     doc -> blob. Synchronous. External
+                                     contract unchanged.
+POST /api/ai/meeting/chunk        — transcribe ONE short (~4 min) segment of
+                                     a live in-progress recording. Fast,
+                                     durable, synchronous per-chunk call —
+                                     this is what lets long meetings survive
+                                     without one giant inline transcription.
+POST /api/ai/meeting/upload       — one whole pre-recorded file. Returns
+                                     immediately with {report_id, status:
+                                     "processing"}; transcription + report
+                                     generation run as a BackgroundTask.
+GET  /api/ai/meeting/status/{id}  — poll target for /api/ai/meeting/upload.
+                                     Once status != "processing", also
+                                     returns the sidecar JSON fields
+                                     (candidate_notes, email_draft).
+GET  /api/ai/meeting/reports      — list all meeting reports
+
+═══════════════════════════════════════════════════════════════════════════
+SPEECH TRANSCRIPTION — CONFIRMED LIVE, 2026-07-21, against speech-eln-covvalent
+═══════════════════════════════════════════════════════════════════════════
+The previous implementation used the Azure Speech SDK's synchronous
+recognize_once() (see git history) — replaced entirely with a plain httpx
+call to the Fast Transcription REST API. Verified via a real Cloud Shell
+round-trip against the live resource, not assumed:
+
+- ENDPOINT: the resource has NO custom subdomain
+  (customSubDomainName is null — `az cognitiveservices account show`
+  confirmed this), so the "<name>.cognitiveservices.azure.com" hostname
+  guessed initially does not exist in DNS at all (curl: "Could not resolve
+  host"). The real, working base is the REGIONAL endpoint:
+  https://centralindia.api.cognitive.microsoft.com — confirmed via
+  `properties.endpoint` on the resource itself, matching SPEECH_REGION
+  below. Auth is via Ocp-Apim-Subscription-Key (the existing
+  _get_speech_key() managed-identity -> ARM key-retrieval flow, unchanged),
+  NOT an Entra bearer token — so the missing custom subdomain doesn't
+  actually block anything here (that requirement is specific to Entra-token
+  auth against Cognitive Services, not subscription-key auth).
+- API-VERSION: 2024-11-15 confirmed working (HTTP 422 InvalidAudioFormat on
+  a synthetic tone, then a full HTTP 200 with real phrases on a genuine
+  speech clip). 2025-10-15 behaved identically wherever tested; 2024-11-15
+  was chosen as the stable, documented GA baseline. 2024-05-15-preview was
+  tested and explicitly REJECTED for this use case — it 400s with "Exactly
+  one input locale must be specified, single language id is not yet
+  supported," i.e. that preview version does not support the multi-locale
+  array Hinglish detection depends on.
+- REQUEST SHAPE: multipart/form-data, "audio" file field + "definition"
+  field containing a JSON string `{"locales": [...]}` — confirmed accepted
+  with locales=["en-IN","hi-IN"] (a 2-locale array), i.e. multi-locale
+  auto-detection is supported on 2024-11-15.
+- RESPONSE SHAPE: confirmed via a real Hinglish test clip —
+  {"durationMilliseconds": int,
+   "combinedPhrases": [{"text": "<whole transcript>"}],
+   "phrases": [{"offsetMilliseconds": int, "durationMilliseconds": int,
+                "text": "...", "words": [{"text":...,
+                "offsetMilliseconds":...,"durationMilliseconds":...}],
+                "locale": "en-IN", "confidence": 0.81...}, ...]}
+  The per-phrase "locale" field is real and populated — confirmed the key
+  name is literally "locale", not "language" or anything else guessed.
+  (Observed behavior, not a bug to fix: on the live Hinglish test clip,
+  every phrase came back tagged "en-IN" even though much of the content
+  was Hindi words in Latin script — the recognizer leaned entirely to
+  en-IN rather than alternating per phrase. The per-phrase "locale" field
+  is read and passed through regardless of what value the model actually
+  returns in practice.)
+
+BLOB STORAGE — reuses the exact "auto-create container if missing, app
+identity already has Storage Blob Data Contributor at account scope"
+pattern already used for eln-reports / eln-chat-uploads elsewhere in this
+codebase (see _upload_blob() below, now parameterized by container so it's
+shared across eln-reports and the new eln-meeting-audio container — no new
+role assignment requested or required).
+
+AUTHOR/USER SCOPING — every blob key written by this file (report docx,
+JSON sidecar, chunk audio, whole-file audio archive) is namespaced by a
+slugified author identifier, so concurrent meetings from different
+@covvalent.com users never collide. Job status is tracked entirely via the
+`status` column on the existing eln_meeting_reports table, keyed by
+report_id (a DB identity column) — there is deliberately NO in-memory/
+global job-state dict anywhere in this file: report_id already uniquely
+scopes each job, and a DB-backed status additionally survives across
+worker processes/restarts, which an in-memory dict would not.
+
+SIDECAR JSON — per instructions, no migration and no new SQL columns.
+candidate_notes / email_draft / per-chunk phrase-locale metadata are written
+to a JSON file next to the report docx blob: same container, same key
+prefix, ".json" suffix instead of ".docx". See _upload_blob() call sites.
 """
 
 import os
@@ -17,7 +106,7 @@ import httpx
 import pyodbc
 from datetime import datetime, date
 from typing import Optional
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -27,18 +116,48 @@ logger = logging.getLogger(__name__)
 AOAI_ENDPOINT    = os.environ.get("AOAI_ENDPOINT", "https://aoai-eln-covvalent-2e2ec.openai.azure.com")
 AOAI_DEPLOYMENT  = "gpt-4o"
 AOAI_API_VERSION = "2024-12-01-preview"
-SPEECH_REGION    = os.environ.get("SPEECH_REGION", "centralindia")
-SPEECH_RESOURCE  = os.environ.get("SPEECH_RESOURCE", "speech-eln-covvalent")
+
+# Speech — see the module docstring's "CONFIRMED LIVE" section for how each
+# of these three values was verified against the real speech-eln-covvalent
+# resource (not assumed).
+SPEECH_REGION      = os.environ.get("SPEECH_REGION", "centralindia")
+SPEECH_RESOURCE    = os.environ.get("SPEECH_RESOURCE", "speech-eln-covvalent")
+SPEECH_ENDPOINT    = os.environ.get("SPEECH_ENDPOINT", f"https://{SPEECH_REGION}.api.cognitive.microsoft.com")
+FAST_TRANSCRIBE_API_VERSION = "2024-11-15"
+MEETING_LOCALES    = ["en-IN", "hi-IN"]  # Hinglish: per-phrase locale auto-detection, not one language for the whole file
+
 SUBSCRIPTION_ID  = "9e25d11c-3753-4b8c-a575-0bcc44f964d4"
 RESOURCE_GROUP   = "rg-eln-covvalent"
 STORAGE_ACCOUNT  = "stelncoovalent"
 BLOB_CONTAINER   = "eln-reports"
+AUDIO_CONTAINER  = "eln-meeting-audio"
+
+_EXT_MAP = {
+    "audio/wav":     ".wav",
+    "audio/webm":    ".webm",
+    "video/webm":    ".webm",
+    "audio/mp4":     ".mp4",
+    "audio/x-m4a":   ".mp4",
+    "audio/aac":     ".aac",
+    "audio/ogg":     ".ogg",
+    "audio/mpeg":    ".mp3",
+}
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
 class MeetingRequest(BaseModel):
     transcript:   str
     project_code: Optional[str] = None
     author:       str = ""
+
+class ChunkResponse(BaseModel):
+    session_id:  str
+    chunk_index: int
+    text:        str
+    locale:      Optional[str] = None
+
+class MeetingUploadResponse(BaseModel):
+    report_id: int
+    status:    str
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 def _get_conn():
@@ -97,66 +216,87 @@ def _get_speech_key() -> str:
     keys   = client.accounts.list_keys(RESOURCE_GROUP, SPEECH_RESOURCE)
     return keys.key1
 
-# ── Blocking SDK transcription — run via executor ─────────────────────────────
-def _transcribe_sync(audio_path: str) -> tuple:
-    import azure.cognitiveservices.speech as speechsdk
+# Cached with a TTL — chunk transcription now calls this far more often
+# (every ~4 min per active recording) than the old one-shot-per-meeting SDK
+# flow did, so avoid re-hitting the ARM key-list API on every single chunk.
+_speech_key_cache = {"key": None, "fetched_at": 0}
+_SPEECH_KEY_TTL_SECONDS = 1800  # 30 minutes
 
-    speech_key = _get_speech_key()
-    cfg = speechsdk.SpeechConfig(subscription=speech_key, region=SPEECH_REGION)
-    cfg.speech_recognition_language = "en-IN"
+def _get_speech_key_cached() -> str:
+    now = time.time()
+    if _speech_key_cache["key"] is None or (now - _speech_key_cache["fetched_at"]) > _SPEECH_KEY_TTL_SECONDS:
+        _speech_key_cache["key"] = _get_speech_key()
+        _speech_key_cache["fetched_at"] = now
+    return _speech_key_cache["key"]
 
-    auto_detect = speechsdk.languageconfig.AutoDetectSourceLanguageConfig(
-        languages=["en-IN", "hi-IN"]
-    )
-    audio_cfg  = speechsdk.audio.AudioConfig(filename=audio_path)
-    recognizer = speechsdk.SpeechRecognizer(
-        speech_config=cfg,
-        audio_config=audio_cfg,
-        auto_detect_source_language_config=auto_detect,
-    )
+# ── Fast Transcription REST call ─────────────────────────────────────────────
+async def _transcribe_via_rest(audio_bytes: bytes, filename: str, content_type: str = None, timeout: float = 180.0) -> dict:
+    """
+    POST to the Azure AI Speech Fast Transcription REST API — see the module
+    docstring's "CONFIRMED LIVE" section for exactly how endpoint,
+    api-version, and request/response shape were verified against the real
+    speech-eln-covvalent resource.
+    """
+    loop = asyncio.get_event_loop()
+    speech_key = await loop.run_in_executor(None, _get_speech_key_cached)
 
-    result = recognizer.recognize_once()
+    files = {"audio": (filename, audio_bytes, content_type or "application/octet-stream")}
+    data  = {"definition": json.dumps({"locales": MEETING_LOCALES})}
 
-    if result.reason == speechsdk.ResultReason.RecognizedSpeech:
-        lang = result.properties.get(
-            speechsdk.PropertyId.SpeechServiceConnection_AutoDetectSourceLanguageResult,
-            "en-IN",
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        r = await client.post(
+            f"{SPEECH_ENDPOINT}/speechtotext/transcriptions:transcribe",
+            params={"api-version": FAST_TRANSCRIBE_API_VERSION},
+            headers={"Ocp-Apim-Subscription-Key": speech_key},
+            files=files,
+            data=data,
         )
-        return result.text, lang
-    elif result.reason == speechsdk.ResultReason.Canceled:
-        details = speechsdk.CancellationDetails.from_result(result)
-        raise RuntimeError(f"Speech recognition canceled: {details.error_details}")
-    else:
-        return "", str(result.reason)
+        r.raise_for_status()
+        return r.json()
+
+
+def _extract_transcript_and_locales(result: dict) -> tuple:
+    """
+    Returns (full_text, phrase_locales) from a confirmed-shape Fast
+    Transcription response — see module docstring. full_text comes from
+    combinedPhrases (falls back to joining phrases[].text if
+    combinedPhrases is absent/empty). phrase_locales is the real per-phrase
+    locale detail (field name "locale", confirmed live), not one language
+    guessed for the whole recording.
+    """
+    combined  = result.get("combinedPhrases") or []
+    full_text = " ".join(p.get("text", "") for p in combined if p.get("text")).strip()
+
+    phrases = result.get("phrases") or []
+    if not full_text:
+        full_text = " ".join(p.get("text", "") for p in phrases if p.get("text")).strip()
+
+    phrase_locales = [
+        {
+            "text":               p.get("text", ""),
+            "locale":             p.get("locale"),
+            "offsetMilliseconds": p.get("offsetMilliseconds"),
+        }
+        for p in phrases
+    ]
+    return full_text, phrase_locales
 
 
 async def _transcribe_audio(audio_bytes: bytes, content_type: str) -> tuple:
-    # Determine file extension for temp file
-    ct = content_type.split(";")[0].strip().lower()
-    ext_map = {
-        "audio/wav":     ".wav",
-        "audio/webm":    ".webm",
-        "video/webm":    ".webm",
-        "audio/mp4":     ".mp4",
-        "audio/x-m4a":   ".mp4",
-        "audio/ogg":     ".ogg",
-        "audio/mpeg":    ".mp3",
-    }
-    suffix   = ext_map.get(ct, ".wav")
-    tmp_path = f"/tmp/{uuid.uuid4()}{suffix}"
+    """
+    Transcribe audio via the Fast Transcription REST API. Returns
+    (text, language_detected) — matches /api/ai/speech's existing external
+    contract. language_detected is the first non-null per-phrase locale
+    found (a real detected value now, e.g. "en-IN"), falling back to
+    "unknown" if no phrases came back (e.g. silence).
+    """
+    ct  = (content_type or "").split(";")[0].strip().lower()
+    ext = _EXT_MAP.get(ct, ".wav")
 
-    try:
-        with open(tmp_path, "wb") as f:
-            f.write(audio_bytes)
-        loop = asyncio.get_event_loop()
-        text, lang = await loop.run_in_executor(None, _transcribe_sync, tmp_path)
-    finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
-
-    return text, lang
+    result = await _transcribe_via_rest(audio_bytes, f"audio{ext}", content_type=ct)
+    full_text, phrase_locales = _extract_transcript_and_locales(result)
+    lang = next((p["locale"] for p in phrase_locales if p.get("locale")), "unknown")
+    return full_text, lang
 
 # ── GPT call ──────────────────────────────────────────────────────────────────
 async def _call_gpt(system_prompt: str, user_content: str) -> str:
@@ -228,6 +368,34 @@ def _strip_json_fence(text: str) -> str:
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"```\s*$", "", text)
     return text.strip()
+
+def _parse_candidate_notes_and_email(sections: dict) -> tuple:
+    """Shared by the synchronous /api/ai/meeting endpoint and the
+    /api/ai/meeting/upload background task — same parsing, one place."""
+    candidate_notes = []
+    raw_candidates  = sections.get("candidate_notes", "")
+    if raw_candidates:
+        try:
+            parsed = json.loads(_strip_json_fence(raw_candidates))
+            if isinstance(parsed, list):
+                candidate_notes = [item for item in parsed if isinstance(item, dict)]
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"[MEETING WARNING] Failed to parse CANDIDATE_NOTES JSON: {e}")
+
+    email_draft = {"subject": "", "body": ""}
+    raw_email   = sections.get("email_draft", "")
+    if raw_email:
+        try:
+            parsed = json.loads(_strip_json_fence(raw_email))
+            if isinstance(parsed, dict):
+                email_draft = {
+                    "subject": parsed.get("subject", ""),
+                    "body":    parsed.get("body", ""),
+                }
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"[MEETING WARNING] Failed to parse EMAIL_DRAFT JSON: {e}")
+
+    return candidate_notes, email_draft
 
 # ── Word doc builder ──────────────────────────────────────────────────────────
 def _set_cell_shading(cell, hex_color: str):
@@ -325,7 +493,15 @@ def _build_meeting_report_docx(
     return buf.read()
 
 # ── Blob upload ───────────────────────────────────────────────────────────────
-async def _upload_blob(content: bytes, blob_path: str) -> str:
+async def _upload_blob(content: bytes, blob_path: str, container: str = BLOB_CONTAINER) -> str:
+    """
+    Auto-creates `container` if missing, using the app's managed identity
+    (already granted Storage Blob Data Contributor at the STORAGE ACCOUNT
+    scope — this pattern extends to any container name, including the new
+    eln-meeting-audio, with no new role assignment needed). Shared by
+    eln-reports (docx reports + JSON sidecars) and eln-meeting-audio (raw
+    chunk / whole-file audio archival).
+    """
     from azure.identity.aio import DefaultAzureCredential
     from azure.storage.blob.aio import BlobServiceClient
     account_url = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net"
@@ -333,15 +509,78 @@ async def _upload_blob(content: bytes, blob_path: str) -> str:
     try:
         async with BlobServiceClient(account_url=account_url, credential=cred) as svc:
             try:
-                await svc.create_container(BLOB_CONTAINER)
+                await svc.create_container(container)
             except Exception:
                 pass
             await svc.get_blob_client(
-                container=BLOB_CONTAINER, blob=blob_path
+                container=container, blob=blob_path
             ).upload_blob(content, overwrite=True)
     finally:
         await cred.close()
-    return f"{account_url}/{BLOB_CONTAINER}/{blob_path}"
+    return f"{account_url}/{container}/{blob_path}"
+
+
+async def _download_blob_json(blob_path: str, container: str = BLOB_CONTAINER) -> Optional[dict]:
+    """Read a small JSON sidecar blob's content directly (not a SAS
+    redirect — this is for the backend to read its own sidecar, not for a
+    browser to download it)."""
+    from azure.identity.aio import DefaultAzureCredential
+    from azure.storage.blob.aio import BlobServiceClient
+    account_url = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net"
+    cred        = DefaultAzureCredential()
+    try:
+        async with BlobServiceClient(account_url=account_url, credential=cred) as svc:
+            blob_client = svc.get_blob_client(container=container, blob=blob_path)
+            stream      = await blob_client.download_blob()
+            data        = await stream.readall()
+            return json.loads(data)
+    except Exception as e:
+        logger.warning(f"[MEETING] Could not read sidecar blob {container}/{blob_path}: {e}")
+        return None
+    finally:
+        await cred.close()
+
+# ── Report-record helpers (status column only — no migration) ────────────────
+def _insert_processing_report(project_code: Optional[str], author: str) -> int:
+    """Inserts a placeholder row with status='processing' so
+    GET /api/ai/meeting/status/{report_id} has something to poll
+    immediately. Writes only to columns the original synchronous INSERT
+    already used — topic/blob_url/transcript get real values once the
+    background task finishes; placeholders here are just non-null."""
+    conn = _get_conn()
+    cur  = conn.cursor()
+    cur.execute(
+        "INSERT INTO eln_meeting_reports "
+        "(project_code, topic, blob_url, transcript, author, status) "
+        "OUTPUT INSERTED.report_id "
+        "VALUES (?,?,?,?,?,'processing')",
+        project_code, "Processing…", "", "", author
+    )
+    report_id = cur.fetchone()[0]
+    conn.commit()
+    conn.close()
+    return report_id
+
+
+def _update_meeting_report(report_id: int, status: str, topic: str = None, blob_url: str = None, transcript: str = None):
+    """Only ever writes to columns the original code already wrote to
+    (status, topic, blob_url, transcript) — no new columns, no migration."""
+    conn = _get_conn()
+    cur  = conn.cursor()
+    if topic is not None and blob_url is not None and transcript is not None:
+        cur.execute(
+            "UPDATE eln_meeting_reports SET status=?, topic=?, blob_url=?, transcript=? WHERE report_id=?",
+            status, topic, blob_url, transcript, report_id
+        )
+    elif topic is not None:
+        cur.execute(
+            "UPDATE eln_meeting_reports SET status=?, topic=? WHERE report_id=?",
+            status, topic, report_id
+        )
+    else:
+        cur.execute("UPDATE eln_meeting_reports SET status=? WHERE report_id=?", status, report_id)
+    conn.commit()
+    conn.close()
 
 # ── Meeting copilot system prompt ─────────────────────────────────────────────
 MEETING_SYSTEM = """
@@ -421,6 +660,137 @@ achha) carry no chemistry — ignore them. Technical terms in English carry the
 meaning. Output in English.
 """
 
+# ── Shared report-generation pipeline (GPT -> sections -> docx -> blob) ──────
+async def _generate_meeting_report_from_transcript(
+    transcript:   str,
+    project_code: Optional[str],
+    author:       str,
+) -> dict:
+    """
+    Shared by the synchronous /api/ai/meeting endpoint and the
+    /api/ai/meeting/upload background task. Blob paths are namespaced by a
+    slugified author so concurrent meetings from different users never
+    collide. Writes a JSON sidecar (candidate_notes, email_draft) next to
+    the report blob — same container, same key prefix, .json suffix — since
+    no new SQL columns/migration are allowed for these fields.
+    """
+    conn = _get_conn()
+    directory = get_project_directory_cached(conn)
+    conn.close()
+    logger.info(f"Loaded {len(directory)} projects for resolution")
+
+    directory_json = json.dumps(directory, ensure_ascii=False)
+    user_content = (
+        "PROJECT DIRECTORY (for resolving product names mentioned in the transcript to "
+        "their project_code — match on product name, generic name, or CAS number, even "
+        "if referenced informally):\n"
+        f"{directory_json}\n\n"
+        f"TRANSCRIPT:\n\n{transcript[:8000]}"
+    )
+
+    gpt_output = await _call_gpt(MEETING_SYSTEM, user_content)
+
+    sections       = _parse_sections(gpt_output)
+    topic          = _extract_topic(gpt_output)
+    generated_date = datetime.utcnow().strftime("%Y-%m-%d")
+    slug           = _slug(topic)
+    author_slug    = _slug(author or "unknown", max_len=30) or "unknown"
+    filename       = f"{generated_date}-{slug}-meeting.docx"
+    blob_path      = f"meetings/{generated_date}/{author_slug}/{filename}"
+
+    candidate_notes, email_draft = _parse_candidate_notes_and_email(sections)
+
+    docx_bytes = _build_meeting_report_docx(topic, project_code, author, sections, generated_date)
+    blob_url   = await _upload_blob(docx_bytes, blob_path)
+
+    sidecar_path = blob_path[:-len(".docx")] + ".json"
+    try:
+        await _upload_blob(
+            json.dumps(
+                {"candidate_notes": candidate_notes, "email_draft": email_draft, "author": author},
+                ensure_ascii=False, indent=2
+            ).encode("utf-8"),
+            sidecar_path,
+        )
+    except Exception as e:
+        logger.warning(f"[MEETING] Failed to write sidecar JSON at {sidecar_path}: {e}")
+
+    return {
+        "topic":            topic,
+        "generated_date":   generated_date,
+        "filename":         filename,
+        "blob_url":         blob_url,
+        "transcript":       transcript,
+        "candidate_notes":  candidate_notes,
+        "email_draft":      email_draft,
+    }
+
+
+async def _process_meeting_upload(report_id: int, audio_bytes: bytes, ext: str, content_type: str, project_code: Optional[str], author: str):
+    """
+    Background task for POST /api/ai/meeting/upload — runs AFTER the HTTP
+    response has already been sent. A multi-hour transcription + report
+    pipeline here never risks the App Service front-end idle timeout that
+    broke meetings past ~1.5 hours under the old synchronous SDK-based
+    flow, because nothing here is holding an HTTP response open.
+    """
+    author_slug = _slug(author or "unknown", max_len=30) or "unknown"
+
+    # Archive the raw uploaded audio, namespaced by author + report_id so
+    # concurrent uploads from different users never collide. Non-fatal if
+    # it fails — still attempt transcription either way.
+    try:
+        await _upload_blob(audio_bytes, f"{author_slug}/{report_id}/original{ext}", container=AUDIO_CONTAINER)
+    except Exception as e:
+        logger.warning(f"[MEETING UPLOAD] Failed to archive original audio for report {report_id}: {e}")
+
+    try:
+        result = await _transcribe_via_rest(audio_bytes, f"upload{ext}", content_type=content_type, timeout=600.0)
+        full_text, phrase_locales = _extract_transcript_and_locales(result)
+
+        if not full_text.strip():
+            _update_meeting_report(report_id, status="failed", topic="Transcription produced no text", blob_url="", transcript="")
+            return
+
+        report = await _generate_meeting_report_from_transcript(full_text, project_code, author)
+
+        for item in report["candidate_notes"]:
+            if not item.get("project_code"):
+                item["project_code"] = project_code
+            item["source_report_id"] = report_id
+
+        # Fold the per-chunk-equivalent phrase-locale detail into the same
+        # sidecar the shared pipeline just wrote, rather than a second blob.
+        sidecar_path = f"meetings/{report['generated_date']}/{author_slug}/" \
+                       f"{report['filename'][:-len('.docx')]}.json"
+        try:
+            await _upload_blob(
+                json.dumps(
+                    {
+                        "candidate_notes": report["candidate_notes"],
+                        "email_draft":     report["email_draft"],
+                        "author":          author,
+                        "phrase_locales":  phrase_locales,
+                    },
+                    ensure_ascii=False, indent=2
+                ).encode("utf-8"),
+                sidecar_path,
+            )
+        except Exception as e:
+            logger.warning(f"[MEETING UPLOAD] Failed to write sidecar JSON for report {report_id}: {e}")
+
+        _update_meeting_report(
+            report_id, status="complete",
+            topic=report["topic"][:200], blob_url=report["blob_url"],
+            transcript=full_text[:8000],
+        )
+    except Exception:
+        logger.exception(f"[MEETING UPLOAD] Background processing failed for report {report_id}")
+        try:
+            _update_meeting_report(report_id, status="failed")
+        except Exception:
+            logger.exception(f"[MEETING UPLOAD] Failed to mark report {report_id} as failed")
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/api/ai/speech")
@@ -428,7 +798,7 @@ async def transcribe_speech(
     audio:      Optional[UploadFile] = File(None),
     transcript: Optional[str]        = Form(None),
 ):
-    """Transcribe audio via Azure Speech SDK, or pass through a text transcript."""
+    """Transcribe audio via the Fast Transcription REST API, or pass through a text transcript."""
     if transcript:
         return {"transcript": transcript, "language_detected": "text"}
     if not audio:
@@ -439,80 +809,150 @@ async def transcribe_speech(
 
     try:
         text, lang = await _transcribe_audio(audio_bytes, content_type)
-    except RuntimeError as e:
-        raise HTTPException(502, detail=str(e))
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(502, detail=f"Transcription failed: {e}")
     except Exception as e:
         raise HTTPException(500, detail=f"Transcription failed: {e}")
 
     return {"transcript": text, "language_detected": lang}
 
 
+@router.post("/api/ai/meeting/chunk", response_model=ChunkResponse)
+async def transcribe_meeting_chunk(
+    audio:       UploadFile = File(...),
+    session_id:  str        = Form(...),
+    chunk_index: int        = Form(...),
+    author:      str        = Form(""),
+):
+    """
+    Transcribes ONE short (~4 min) segment of a live in-progress recording.
+    A single short-audio Fast Transcription call is fast and well within any
+    App Service front-end timeout — this is what lets a multi-hour live
+    meeting survive without one giant inline call. Also durably archives the
+    raw chunk audio to eln-meeting-audio, namespaced by author + session_id,
+    so two concurrent meetings from different people never collide.
+    """
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(400, detail="Empty audio chunk.")
+
+    content_type = audio.content_type or "audio/webm"
+    ext = _EXT_MAP.get(content_type.split(";")[0].strip().lower(), ".webm")
+
+    author_slug = _slug(author or "unknown", max_len=30) or "unknown"
+    blob_path   = f"{author_slug}/{session_id}/chunk-{chunk_index:04d}{ext}"
+
+    try:
+        await _upload_blob(audio_bytes, blob_path, container=AUDIO_CONTAINER)
+    except Exception as e:
+        # Non-fatal — still attempt transcription even if archival failed.
+        logger.warning(f"[MEETING CHUNK] Failed to archive chunk audio ({blob_path}): {e}")
+
+    try:
+        result = await _transcribe_via_rest(audio_bytes, f"chunk{ext}", content_type=content_type)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(502, detail=f"Transcription failed for chunk {chunk_index}: {e}")
+    except Exception as e:
+        raise HTTPException(500, detail=f"Transcription failed for chunk {chunk_index}: {e}")
+
+    full_text, phrase_locales = _extract_transcript_and_locales(result)
+    locale = next((p["locale"] for p in phrase_locales if p.get("locale")), None)
+
+    return ChunkResponse(session_id=session_id, chunk_index=chunk_index, text=full_text, locale=locale)
+
+
+@router.post("/api/ai/meeting/upload", response_model=MeetingUploadResponse, status_code=202)
+async def upload_meeting_recording(
+    background_tasks: BackgroundTasks,
+    audio:            UploadFile    = File(...),
+    project_code:     Optional[str] = Form(None),
+    author:           str           = Form(""),
+):
+    """
+    Accepts one whole pre-recorded meeting file. Inserts a 'processing' row
+    immediately and returns — transcription (which can take minutes for a
+    long file) and report generation both run in a BackgroundTask, AFTER
+    the HTTP response is sent, so this never risks the App Service
+    front-end idle timeout the old synchronous transcribe-then-generate
+    flow hit past ~1.5 hours of audio.
+    """
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(400, detail="Uploaded audio file is empty.")
+
+    content_type = audio.content_type or "audio/webm"
+    ext = _EXT_MAP.get(content_type.split(";")[0].strip().lower(), ".webm")
+
+    report_id = _insert_processing_report(project_code, author)
+
+    background_tasks.add_task(
+        _process_meeting_upload, report_id, audio_bytes, ext, content_type, project_code, author
+    )
+
+    return MeetingUploadResponse(report_id=report_id, status="processing")
+
+
+@router.get("/api/ai/meeting/status/{report_id}")
+async def get_meeting_status(report_id: int):
+    """
+    Poll target for POST /api/ai/meeting/upload. Once status is no longer
+    'processing', also returns the sidecar's candidate_notes/email_draft —
+    read from the JSON file next to the report blob (never stored in SQL,
+    per the no-migration constraint).
+    """
+    conn = _get_conn()
+    cur  = conn.cursor()
+    cur.execute(
+        "SELECT report_id, project_code, topic, blob_url, author, generated_date, status "
+        "FROM eln_meeting_reports WHERE report_id = ?",
+        report_id
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, detail=f"No meeting report with report_id={report_id}")
+
+    result = {
+        "report_id":       row[0],
+        "project_code":    row[1],
+        "topic":           row[2],
+        "blob_url":        row[3],
+        "author":          row[4],
+        "generated_date":  _serialize(row[5]),
+        "status":          row[6],
+        "candidate_notes": [],
+        "email_draft":     {"subject": "", "body": ""},
+    }
+
+    if result["status"] == "complete" and result["blob_url"]:
+        match = re.search(rf"{re.escape(BLOB_CONTAINER)}/(.+)\.docx$", result["blob_url"])
+        if match:
+            sidecar_path = match.group(1) + ".json"
+            sidecar = await _download_blob_json(sidecar_path)
+            if sidecar:
+                result["candidate_notes"] = sidecar.get("candidate_notes", [])
+                result["email_draft"]     = sidecar.get("email_draft", {"subject": "", "body": ""})
+
+    return result
+
+
 @router.post("/api/ai/meeting")
 async def generate_meeting_report(req: MeetingRequest):
-    """Run meeting transcript through copilot prompt, generate Word report, upload to blob."""
+    """Run meeting transcript through copilot prompt, generate Word report, upload to blob.
+    External contract unchanged."""
     if not req.transcript.strip():
         raise HTTPException(400, detail="Transcript is empty.")
 
+    report = await _generate_meeting_report_from_transcript(req.transcript, req.project_code, req.author)
+
     conn = _get_conn()
-
-    directory = get_project_directory_cached(conn)
-    logger.info(f"Loaded {len(directory)} projects for resolution")
-
-    directory_json = json.dumps(directory, ensure_ascii=False)
-    user_content = (
-        "PROJECT DIRECTORY (for resolving product names mentioned in the transcript to "
-        "their project_code — match on product name, generic name, or CAS number, even "
-        "if referenced informally):\n"
-        f"{directory_json}\n\n"
-        f"TRANSCRIPT:\n\n{req.transcript[:8000]}"
-    )
-
-    gpt_output = await _call_gpt(MEETING_SYSTEM, user_content)
-
-    sections       = _parse_sections(gpt_output)
-    topic          = _extract_topic(gpt_output)
-    generated_date = datetime.utcnow().strftime("%Y-%m-%d")
-    slug           = _slug(topic)
-    filename       = f"{generated_date}-{slug}-meeting.docx"
-    blob_path      = f"meetings/{filename}"
-
-    # ── Candidate project-memory notes ────────────────────────────────────
-    candidate_notes = []
-    raw_candidates  = sections.get("candidate_notes", "")
-    if raw_candidates:
-        try:
-            parsed = json.loads(_strip_json_fence(raw_candidates))
-            if isinstance(parsed, list):
-                candidate_notes = [item for item in parsed if isinstance(item, dict)]
-        except (json.JSONDecodeError, ValueError) as e:
-            print(f"[MEETING WARNING] Failed to parse CANDIDATE_NOTES JSON: {e}")
-
-    # ── Email draft ────────────────────────────────────────────────────────
-    email_draft = {"subject": "", "body": ""}
-    raw_email   = sections.get("email_draft", "")
-    if raw_email:
-        try:
-            parsed = json.loads(_strip_json_fence(raw_email))
-            if isinstance(parsed, dict):
-                email_draft = {
-                    "subject": parsed.get("subject", ""),
-                    "body":    parsed.get("body", ""),
-                }
-        except (json.JSONDecodeError, ValueError) as e:
-            print(f"[MEETING WARNING] Failed to parse EMAIL_DRAFT JSON: {e}")
-
-    docx_bytes = _build_meeting_report_docx(
-        topic, req.project_code, req.author, sections, generated_date
-    )
-    blob_url = await _upload_blob(docx_bytes, blob_path)
-
-    cur = conn.cursor()
+    cur  = conn.cursor()
     cur.execute(
         "INSERT INTO eln_meeting_reports "
         "(project_code, topic, blob_url, transcript, author, status) "
         "OUTPUT INSERTED.report_id, INSERTED.generated_date "
         "VALUES (?,?,?,?,?,'complete')",
-        req.project_code, topic[:200], blob_url, req.transcript[:8000], req.author
+        req.project_code, report["topic"][:200], report["blob_url"], req.transcript[:8000], req.author
     )
     row = cur.fetchone()
     report_id  = row[0]
@@ -520,7 +960,7 @@ async def generate_meeting_report(req: MeetingRequest):
     conn.commit()
     conn.close()
 
-    for item in candidate_notes:
+    for item in report["candidate_notes"]:
         # Priority: (1) model's directory-resolved project_code, (2) the
         # meeting's own project_code param if the model returned null,
         # (3) otherwise stays null.
@@ -530,12 +970,12 @@ async def generate_meeting_report(req: MeetingRequest):
 
     return {
         "report_id":       report_id,
-        "blob_url":        blob_url,
-        "topic":           topic,
+        "blob_url":        report["blob_url"],
+        "topic":           report["topic"],
         "generated_date":  db_date,
-        "filename":        filename,
-        "candidate_notes": candidate_notes,
-        "email_draft":     email_draft,
+        "filename":        report["filename"],
+        "candidate_notes": report["candidate_notes"],
+        "email_draft":     report["email_draft"],
     }
 
 

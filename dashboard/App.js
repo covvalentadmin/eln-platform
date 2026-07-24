@@ -835,106 +835,212 @@ function NoteCandidateCard({ item, onToggle, onTextChange, onProjectCodeChange }
   );
 }
 
+// MediaRecorder mime-type selection — works across Chromium, Firefox, and
+// Safari (14.1+), unlike the old Web Speech API path which was Chrome/Edge
+// only. Falls back to the browser's default if none of these are supported.
+function pickSupportedMimeType() {
+  if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
+    return '';
+  }
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/aac', 'audio/ogg;codecs=opus'];
+  return candidates.find(t => MediaRecorder.isTypeSupported(t)) || '';
+}
+
+const CHUNK_ROTATION_MS = 4 * 60 * 1000; // 4 minutes
+
 function MeetingCopilotView({ user }) {
   const [isRecording, setIsRecording]         = useState(false);
   const [transcript, setTranscript]           = useState('');
-  const [interimTranscript, setInterimTranscript] = useState('');
   const [projectCode, setProjectCode]         = useState('');
   const [audioFile, setAudioFile]             = useState(null);
   const [isGenerating, setIsGenerating]       = useState(false);
+  const [processingReportId, setProcessingReportId] = useState(null);
   const [reportUrl, setReportUrl]             = useState(null);
   const [reportMeta, setReportMeta]           = useState(null);
   const [error, setError]                     = useState(null);
+  const [chunkWarning, setChunkWarning]       = useState(null);
+  const [lastDetectedLocale, setLastDetectedLocale] = useState(null);
   const [noteItems, setNoteItems]             = useState([]);
   const [emailSubject, setEmailSubject]       = useState('');
   const [emailBody, setEmailBody]             = useState('');
   const [savingNotes, setSavingNotes]         = useState(false);
   const [saveResult, setSaveResult]           = useState(null);
   const [copySuccess, setCopySuccess]         = useState(false);
-  const recogRef                              = useRef(null);
-  const transcriptRef                         = useRef(null);
+  const transcriptRef      = useRef(null);
+  const streamRef          = useRef(null);
+  const recorderRef        = useRef(null);
+  const rotationTimerRef   = useRef(null);
+  const sessionIdRef       = useRef(null);
+  const chunkIndexRef      = useRef(0);
+  const pollTimerRef       = useRef(null);
 
   // Auto-scroll transcript
   useEffect(() => {
     if (transcriptRef.current) transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
-  }, [transcript, interimTranscript]);
+  }, [transcript]);
 
-  const startRecording = () => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { setError('Speech recognition not supported in this browser. Use Chrome or Edge.'); return; }
-    setError(null);
-    const recog = new SR();
-    recog.lang = 'en-IN';
-    recog.continuous = true;
-    recog.interimResults = true;
-    recog.onresult = (event) => {
-      let finalText = '', interimText = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        if (event.results[i].isFinal) finalText += event.results[i][0].transcript + ' ';
-        else interimText += event.results[i][0].transcript;
-      }
-      if (finalText) setTranscript(t => t + finalText);
-      setInterimTranscript(interimText);
+  // Stop any in-flight recording/polling if the component unmounts mid-meeting.
+  useEffect(() => {
+    return () => {
+      if (rotationTimerRef.current) clearInterval(rotationTimerRef.current);
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+      if (recorderRef.current && recorderRef.current.state !== 'inactive') recorderRef.current.stop();
+      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
     };
-    recog.onerror  = (e) => { setError(`Mic error: ${e.error}`); setIsRecording(false); };
-    recog.onend    = () => { setIsRecording(false); setInterimTranscript(''); };
-    recog.start();
-    recogRef.current = recog;
-    setIsRecording(true);
+  }, []);
+
+  const uploadChunk = useCallback(async (blob, index) => {
+    if (!blob || blob.size === 0) return;
+    const fd = new FormData();
+    fd.append('audio', blob, `chunk-${index}${blob.type.includes('mp4') ? '.mp4' : '.webm'}`);
+    fd.append('session_id', sessionIdRef.current);
+    fd.append('chunk_index', String(index));
+    fd.append('author', user?.userDetails || '');
+    try {
+      const res = await fetch(`${API_BASE}/api/ai/meeting/chunk`, { method: 'POST', body: fd });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.text) setTranscript(t => (t ? `${t} ${data.text}` : data.text));
+      if (data.locale) setLastDetectedLocale(data.locale);
+      setChunkWarning(null);
+    } catch (e) {
+      setChunkWarning(`Segment ${index + 1} failed to transcribe (${e.message}) — recording continues.`);
+    }
+  }, [user]);
+
+  // Starts a BRAND-NEW MediaRecorder instance on the existing mic stream.
+  // Only the first blob from a single continuous MediaRecorder's
+  // dataavailable events is independently decodable — so each ~4-minute
+  // segment must be its own complete recorder instance (start, then one
+  // stop() with no timeslice), not one recorder sliced with a timeslice.
+  const startNewSegment = useCallback(() => {
+    const stream = streamRef.current;
+    if (!stream) return;
+    const mimeType = pickSupportedMimeType();
+    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    const currentIndex = chunkIndexRef.current;
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) uploadChunk(e.data, currentIndex);
+    };
+    recorder.start();
+    recorderRef.current = recorder;
+  }, [uploadChunk]);
+
+  const rotateSegment = useCallback(() => {
+    const old = recorderRef.current;
+    chunkIndexRef.current += 1;
+    if (old && old.state !== 'inactive') old.stop();
+    startNewSegment();
+  }, [startNewSegment]);
+
+  const startRecording = async () => {
+    setError(null);
+    if (typeof navigator.mediaDevices?.getUserMedia !== 'function' || typeof MediaRecorder === 'undefined') {
+      setError('Microphone recording is not supported in this browser.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      sessionIdRef.current = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      chunkIndexRef.current = 0;
+      startNewSegment();
+      rotationTimerRef.current = setInterval(rotateSegment, CHUNK_ROTATION_MS);
+      setIsRecording(true);
+    } catch (e) {
+      setError(`Could not access microphone: ${e.message}`);
+    }
   };
 
   const stopRecording = () => {
-    recogRef.current?.stop();
+    if (rotationTimerRef.current) { clearInterval(rotationTimerRef.current); rotationTimerRef.current = null; }
+    const recorder = recorderRef.current;
+    if (recorder && recorder.state !== 'inactive') recorder.stop();
+    recorderRef.current = null;
+    const stream = streamRef.current;
+    if (stream) { stream.getTracks().forEach(t => t.stop()); streamRef.current = null; }
     setIsRecording(false);
-    setInterimTranscript('');
   };
 
   const clearAll = () => {
     stopRecording();
-    setTranscript(''); setInterimTranscript(''); setProjectCode('');
+    if (pollTimerRef.current) { clearTimeout(pollTimerRef.current); pollTimerRef.current = null; }
+    setTranscript(''); setProjectCode('');
     setAudioFile(null); setReportUrl(null); setReportMeta(null); setError(null);
+    setChunkWarning(null); setLastDetectedLocale(null); setProcessingReportId(null);
     setNoteItems([]); setEmailSubject(''); setEmailBody('');
     setSaveResult(null); setCopySuccess(false);
   };
 
+  const applyReportResult = (data) => {
+    setReportUrl(`${API_BASE}/api/ai/report/download/${data.report_id}?source=meeting`);
+    setReportMeta(data);
+    setNoteItems((data.candidate_notes || []).map(n => ({
+      included:         true,
+      note_type:        n.note_type === 'data_point' ? 'data_point' : 'decision',
+      note_text:        n.note_text || '',
+      originalText:     n.note_text || '',
+      exp_number_full:  n.exp_number_full || null,
+      project_code:     n.project_code || null,
+      needsProjectCode: !n.project_code,
+      source_report_id: n.source_report_id ?? data.report_id,
+    })));
+    setEmailSubject(data.email_draft?.subject || '');
+    setEmailBody(data.email_draft?.body || '');
+    setSaveResult(null);
+    setCopySuccess(false);
+  };
+
+  // Poll target for the pre-recorded upload path — replaces the old
+  // upload-and-wait flow so a long file's transcription never has to
+  // complete inside one HTTP request/response cycle.
+  const pollMeetingStatus = (reportId) => new Promise((resolve, reject) => {
+    const poll = async () => {
+      try {
+        const data = await apiFetch(`/api/ai/meeting/status/${reportId}`);
+        if (data.status === 'processing') {
+          pollTimerRef.current = setTimeout(poll, 5000);
+        } else if (data.status === 'complete') {
+          applyReportResult(data);
+          resolve();
+        } else {
+          reject(new Error(`Report generation failed (status: ${data.status})`));
+        }
+      } catch (e) {
+        reject(e);
+      }
+    };
+    poll();
+  });
+
   const generateReport = async () => {
     if (!transcript.trim() && !audioFile) {
-      setError('Record or upload audio, or paste a transcript first.');
+      setError('Record a meeting, upload audio, or paste a transcript first.');
       return;
     }
-    setIsGenerating(true); setError(null); setReportUrl(null);
+    setIsGenerating(true); setError(null); setReportUrl(null); setReportMeta(null); setProcessingReportId(null);
     try {
-      let finalTranscript = transcript;
       if (audioFile && !transcript.trim()) {
+        // Pre-recorded file — upload then poll; never blocks on transcription.
         const fd = new FormData();
         fd.append('audio', audioFile);
-        const res = await fetch(`${API_BASE}/api/ai/speech`, { method: 'POST', body: fd });
-        if (!res.ok) throw new Error(`Transcription failed (HTTP ${res.status})`);
-        const data = await res.json();
-        finalTranscript = data.transcript;
-        setTranscript(finalTranscript);
+        if (projectCode) fd.append('project_code', projectCode);
+        fd.append('author', user?.userDetails || '');
+        const res = await fetch(`${API_BASE}/api/ai/meeting/upload`, { method: 'POST', body: fd });
+        if (!res.ok) throw new Error(`Upload failed (HTTP ${res.status})`);
+        const { report_id } = await res.json();
+        setProcessingReportId(report_id);
+        await pollMeetingStatus(report_id);
+      } else {
+        // Live-recorded (already transcribed via /api/ai/meeting/chunk) or
+        // pasted transcript — same synchronous /api/ai/meeting contract as always.
+        const data = await apiFetch('/api/ai/meeting', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ transcript, project_code: projectCode || null, author: user?.userDetails || '' }),
+        });
+        applyReportResult(data);
       }
-      const data = await apiFetch('/api/ai/meeting', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transcript: finalTranscript, project_code: projectCode || null, author: user?.userDetails || '' }),
-      });
-      setReportUrl(`${API_BASE}/api/ai/report/download/${data.report_id}?source=meeting`);
-      setReportMeta(data);
-      setNoteItems((data.candidate_notes || []).map(n => ({
-        included:         true,
-        note_type:        n.note_type === 'data_point' ? 'data_point' : 'decision',
-        note_text:        n.note_text || '',
-        originalText:     n.note_text || '',
-        exp_number_full:  n.exp_number_full || null,
-        project_code:     n.project_code || null,
-        needsProjectCode: !n.project_code,
-        source_report_id: n.source_report_id ?? data.report_id,
-      })));
-      setEmailSubject(data.email_draft?.subject || '');
-      setEmailBody(data.email_draft?.body || '');
-      setSaveResult(null);
-      setCopySuccess(false);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -1024,8 +1130,14 @@ function MeetingCopilotView({ user }) {
               {isRecording ? '⏹' : '⏺'}
             </button>
             <div style={{ color: isRecording ? '#c0392b' : C.textDim, fontFamily: FONT, fontSize: '12px', fontWeight: 600 }}>
-              {isRecording ? '● Recording — click to stop' : 'Click to record (Chrome/Edge)'}
+              {isRecording ? '● Recording — click to stop' : 'Click to record'}
             </div>
+            {isRecording && lastDetectedLocale && (
+              <div style={{ color: C.textSub, fontFamily: FONT, fontSize: '11px' }}>Detected language: <strong style={{ color: C.blue }}>{lastDetectedLocale}</strong></div>
+            )}
+            {chunkWarning && (
+              <div style={{ color: C.danger, fontFamily: FONT, fontSize: '11px', textAlign: 'center', maxWidth: '280px' }}>{chunkWarning}</div>
+            )}
           </div>
 
           {/* Upload audio */}
@@ -1042,9 +1154,8 @@ function MeetingCopilotView({ user }) {
             style={{ background: C.ice, border: `1.5px solid ${C.border}`, borderRadius: '8px', padding: '12px 14px', minHeight: '200px', maxHeight: '400px', overflowY: 'auto', fontFamily: FONT, fontSize: '13px', lineHeight: '1.7', color: C.blue }}
           >
             {transcript && <span style={{ color: C.navy }}>{transcript}</span>}
-            {interimTranscript && <span style={{ color: C.textDim, fontStyle: 'italic' }}>{interimTranscript}</span>}
-            {!transcript && !interimTranscript && (
-              <span style={{ color: C.textSub, fontStyle: 'italic' }}>Transcript appears here as you speak, or paste directly…</span>
+            {!transcript && (
+              <span style={{ color: C.textSub, fontStyle: 'italic' }}>Transcript appears here as you speak (in ~4-minute segments), or paste directly…</span>
             )}
           </div>
           {/* Allow manual edit */}
@@ -1079,7 +1190,9 @@ function MeetingCopilotView({ user }) {
               transition: 'all 0.15s', marginBottom: '10px',
             }}
           >
-            {isGenerating ? '⏳ Generating…' : '⚗ Generate Report'}
+            {isGenerating
+              ? (processingReportId ? `⏳ Transcribing in background… (#${processingReportId})` : '⏳ Generating…')
+              : '⚗ Generate Report'}
           </button>
 
           <button
@@ -1110,7 +1223,7 @@ function MeetingCopilotView({ user }) {
           {/* Instructions */}
           <div style={{ background: C.ice, border: `1.5px solid ${C.border}`, borderRadius: '8px', padding: '14px 16px', fontFamily: FONT, fontSize: '12px', color: C.blue, lineHeight: '1.7' }}>
             <div style={{ color: C.navy, fontWeight: 700, marginBottom: '6px', fontSize: '11px', letterSpacing: '0.5px' }}>HOW TO USE</div>
-            Start recording and speak naturally. English, Hindi, or Hinglish all work. Describe the problem, hypotheses, and what experiments you want to run. Stop recording when done, then click Generate Report.
+            Start recording and speak naturally — English, Hindi, or Hinglish all work, and each ~4-minute segment is transcribed as you go, so long meetings are never lost. Describe the problem, hypotheses, and what experiments you want to run. Stop recording when done, then click Generate Report. For a pre-recorded file, upload and click Generate — long files transcribe in the background, so this page will show progress while it works.
           </div>
         </div>
       </div>
