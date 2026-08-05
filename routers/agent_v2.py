@@ -180,7 +180,7 @@ KNOWN GAPS / THINGS I GUESSED AT — READ BEFORE USING THIS FILE FOR ANYTHING
 import os
 import json
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Header, Depends
 
 from routers.agent import (
     dispatch_tool,
@@ -663,3 +663,14 @@ async def chat(request: ChatRequest):
             # per-call anymore.
             model_used=agent_used
         )
+
+
+CLAPPIA_API_KEY = os.environ.get("CLAPPIA_API_KEY")
+
+def verify_clappia_key(x_clappia_key: str = Header(None)):
+    if not CLAPPIA_API_KEY or x_clappia_key != CLAPPIA_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+@router.post("/api/ai/chat/external")
+async def chat_external(request: ChatRequest, _=Depends(verify_clappia_key)):
+    return await chat(request)
