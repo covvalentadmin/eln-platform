@@ -10,7 +10,7 @@ import pytest
 from stagegate import clappia
 from stagegate.clappia import ClappiaClient, ClappiaError, Config, fv, load_dotenv, norm_value, urllib_transport
 from stagegate.engine import build_checklist, load_library
-from stagegate.inject import EXIT_ERRORS, EXIT_OK, EXIT_REFUSED, run_inject, to_select
+from stagegate.inject import EXIT_ERRORS, EXIT_OK, EXIT_REFUSED, run_inject, to_payload
 
 FX = Path(__file__).resolve().parent.parent / "fixtures"
 _SEL = load_library().settings["select_fields"]
@@ -29,9 +29,10 @@ def no_network(monkeypatch):
 
 
 def wrap(app, data):
-    """Independent expectation of Clappia's write format: Select values as one-string lists."""
-    return {k: [str(v)] if k in SELECT[app] and v not in (None, "") and not isinstance(v, list) else v
-            for k, v in data.items()}
+    """Independent expectation of Clappia's write format: empties dropped, Select values as
+    one-string lists, other lists kept, everything else a string."""
+    return {k: v if isinstance(v, list) else [str(v)] if k in SELECT[app] else str(v)
+            for k, v in data.items() if v is not None and v != ""}
 
 
 class FakeClappia:
@@ -55,10 +56,15 @@ class FakeClappia:
         return sid
 
     def _check_select(self, app, data):
+        """Write validation, as strict as live Clappia has proved to be."""
         for k, v in data.items():
             if k in SELECT.get(app, ()) and not isinstance(v, list):
                 raise ClappiaError(f"HTTP 400: Error in Select value {v!r} for field {k!r}: "
                                    "value should be an array of strings")
+            if not isinstance(v, (str, list)):
+                raise ClappiaError(f"HTTP 400: Error in value {v!r} for field {k!r}: value should be a string")
+            if v == "":
+                raise ClappiaError(f"HTTP 400: Error in value '' for field {k!r}: empty value")
 
     @staticmethod
     def _matches(stored, value):
@@ -182,13 +188,27 @@ def test_fresh_run_creates_18_records_with_select_values_as_lists():
             if k in SELECT[c["appId"]]:
                 assert isinstance(v, list) and len(v) == 1 and isinstance(v[0], str), (c["appId"], k, v)
             else:
-                assert not isinstance(v, list), (c["appId"], k, v)
+                assert isinstance(v, str) and v != "", (c["appId"], k, v)
     pm = fake.creates("PM")[0]["data"]
     assert pm["end_use"] == ["Specialty / industrial"] and pm["incoterms"] == ["CIF"]
     assert pm["transit_temperature"] == ["Ambient"] and pm["target_market"] == "EU"
     gi = fake.creates("GI")[0]["data"]
     assert gi["gate"] == ["G1"] and gi["hard_stop"] == ["No"] and gi["superseded"] == ["No"]
     assert isinstance(gi["idempotency_key"], str)
+
+
+def test_fresh_run_numbers_as_strings_and_empties_dropped():
+    fake = FakeClappia()
+    code, _ = run(fake)
+    assert code == EXIT_OK
+    assert fake.creates("PM")[0]["data"]["target_price_usd_kg"] == "85"
+    by_id = {c["data"]["item_id"]: c["data"] for c in fake.creates("GI")}
+    assert by_id["DF-L5"]["kickoff_score"] == "3"
+    core = [d for d in by_id.values() if d["source"] == ["Core template"]]
+    assert len(core) == 13
+    for d in core:
+        assert "approver_email" not in d and "kickoff_finding" not in d and "kickoff_score" not in d, d["item_id"]
+    assert all(v != "" for c in fake.creates() for v in c["data"].values())
 
 
 def test_rerun_with_list_valued_reads_creates_and_edits_nothing():
@@ -249,11 +269,21 @@ def test_fake_rejects_plain_select_value():
         c.create_submission("GI", {"gate": "G1"})
 
 
-def test_to_select_and_norm_value():
-    data = {"gate": "G1", "item_class": "", "hard_stop": None, "source": ["Core"], "item_title": "x", "n": 3}
-    assert to_select(data, ["gate", "item_class", "hard_stop", "source"]) == {
-        "gate": ["G1"], "item_class": "", "hard_stop": None, "source": ["Core"], "item_title": "x", "n": 3}
-    assert to_select(data, None) == data
+def test_fake_rejects_numbers_and_empty_strings():
+    c = ClappiaClient(Config.from_env(ENV), transport=FakeClappia())
+    with pytest.raises(ClappiaError, match="should be a string"):
+        c.create_submission("PM", {"target_price_usd_kg": 85})
+    with pytest.raises(ClappiaError, match="empty value"):
+        c.create_submission("GI", {"approver_email": ""})
+
+
+def test_to_payload_and_norm_value():
+    data = {"gate": "G1", "item_class": "", "hard_stop": None, "source": ["Core"], "item_title": "x",
+            "n": 3, "price": 85.5, "flag": True, "tags": ["a", "b"]}
+    assert to_payload(data, ["gate", "item_class", "hard_stop", "source"]) == {
+        "gate": ["G1"], "source": ["Core"], "item_title": "x", "n": "3", "price": "85.5", "flag": "True",
+        "tags": ["a", "b"]}
+    assert to_payload({"gate": "G1", "e": ""}, None) == {"gate": "G1"}
     assert norm_value(["a", 1]) == "a, 1" and norm_value(85) == "85" and norm_value("G1") == "G1"
     assert fv({"submissionFieldValues": {"gate": ["G1"], "kickoff_score": 3}}) == {"gate": "G1", "kickoff_score": "3"}
 

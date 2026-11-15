@@ -51,11 +51,21 @@ def _changed(existing: dict, wanted: dict) -> dict:
     return {k: v for k, v in wanted.items() if existing.get(k, "") != norm_value(v)}
 
 
-def to_select(data: dict, fields) -> dict:
-    """Clappia write format: wrap non-empty Select values as a one-string list. Others unchanged."""
-    fields = set(fields or ())
-    return {k: [str(v)] if k in fields and v not in (None, "") and not isinstance(v, list) else v
-            for k, v in data.items()}
+def to_payload(data: dict, select_fields) -> dict:
+    """Clappia write format, applied to every create/edit body:
+    empty (None / "") dropped; Select -> [str(v)]; lists unchanged; everything else -> str(v)."""
+    sel = set(select_fields or ())
+    out = {}
+    for k, v in data.items():
+        if v is None or v == "":
+            continue
+        if isinstance(v, list):
+            out[k] = v
+        elif k in sel:
+            out[k] = [str(v)]
+        else:
+            out[k] = str(v)
+    return out
 
 
 def run_inject(fixture: str, dry_run: bool = False, allow_live: bool = False,
@@ -111,14 +121,16 @@ def run_inject(fixture: str, dry_run: bool = False, allow_live: bool = False,
         found = client.get_submissions(cfg.app_project_master, {"project_code": pc})
         if len(found) > 1:
             raise ClappiaError(f"{len(found)} Project Master records for {pc}; fix duplicates by hand")
+        pm_payload = to_payload(project, sel_pm)
         if not found:
-            sid = client.create_submission(cfg.app_project_master, to_select(project, sel_pm))
+            sid = client.create_submission(cfg.app_project_master, pm_payload)
             summ.add("created", f"Project Master {pc}", sid)
         else:
             sid = found[0].get("submissionId", "")
-            diff = _changed(fv(found[0]), project)
+            # Diff in payload form, so dropped empty values never produce a phantom edit.
+            diff = _changed(fv(found[0]), pm_payload)
             if diff:
-                client.edit_submission(cfg.app_project_master, sid, to_select(diff, sel_pm))
+                client.edit_submission(cfg.app_project_master, sid, diff)
                 summ.add("updated", f"Project Master {pc}", f"{sid}: {', '.join(sorted(diff))}")
             else:
                 summ.add("skipped", f"Project Master {pc}", f"{sid} unchanged")
@@ -142,7 +154,7 @@ def run_inject(fixture: str, dry_run: bool = False, allow_live: bool = False,
                 summ.add("skipped", f"Gate Item {key}", "already exists")
                 continue
             try:
-                sid = client.create_submission(cfg.app_gate_items, to_select(it.to_clappia(), sel_gi))
+                sid = client.create_submission(cfg.app_gate_items, to_payload(it.to_clappia(), sel_gi))
                 existing.add(key)
                 summ.add("created", f"Gate Item {key}", sid)
             except ClappiaError as ex:
@@ -158,7 +170,7 @@ def run_inject(fixture: str, dry_run: bool = False, allow_live: bool = False,
             summ.add("skipped", target, f"{found[0].get('submissionId', '')} already exists")
         else:
             summ.add("created", target, client.create_submission(cfg.app_gate_decision,
-                                                                 to_select(decision, sel_gd)))
+                                                                 to_payload(decision, sel_gd)))
     except ClappiaError as ex:
         summ.add("error", target, str(ex))
 
