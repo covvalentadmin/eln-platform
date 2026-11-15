@@ -13,7 +13,9 @@ Branch: `feature/stage-gate`. No Azure, no ELN, no SharePoint integration in v0.
 | `schema/kickoff_sidecar.schema.json` | Sidecar contract (5 register fields **assumed**: risk, score, confidence, evidence, learning_id) |
 | `stagegate/engine.py` | Pure classifier: `build_checklist(project, sidecar, lib) -> (items, log)` |
 | `stagegate/readiness.py` | Traffic light + gate-ready from Gate Items records |
-| `stagegate/cli.py` | `preview` now; `inject` (Day 3), `status` (Day 4) |
+| `stagegate/cli.py` | `preview`, `inject`; `status` (Day 4) |
+| `stagegate/clappia.py` | Thin stdlib client: create / edit / getSubmissions (`x-api-key` auth), tiny `.env` loader |
+| `stagegate/inject.py` | Idempotent write: Project Master upsert → missing Gate Items → G1 Gate Decision |
 | `fixtures/FX-{1,2,3}.json` | Clean / hazardous / blocked; role holders = pilot users |
 
 ## Run
@@ -21,7 +23,12 @@ Branch: `feature/stage-gate`. No Azure, no ELN, no SharePoint integration in v0.
 pip install -r requirements.txt
 python -m pytest -q
 python -m stagegate.cli preview fixtures/FX-2.json
+python -m stagegate.cli inject fixtures/FX-1.json --dry-run   # no API calls at all
 ```
+
+`inject` exits unless `SG_ENABLED=true`, and refuses non-`FX-` project codes without `--allow-live`.
+A live run needs `CLAPPIA_API_KEY` and `CLAPPIA_USER_EMAIL` in `.env`. Re-runs are safe: Gate Items
+are matched on `idempotency_key`, and the Gate Decision on `project_code` + `gate`.
 
 ## Classification (spec)
 | Input | Class | Gate |

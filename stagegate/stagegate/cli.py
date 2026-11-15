@@ -1,4 +1,4 @@
-"""stagegate CLI — v0.1. Day 1: `preview` (offline dry run). Day 3 adds `inject`, Day 4 `status`."""
+"""stagegate CLI — v0.1. `preview` (offline dry run), `inject` (Clappia write). Day 4 adds `status`."""
 import argparse
 import json
 import sys
@@ -25,7 +25,14 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     pv = sub.add_parser("preview", help="Dry-run a {project, sidecar} JSON; no Clappia calls")
     pv.add_argument("fixture")
+    ij = sub.add_parser("inject", help="Write a fixture's G1 checklist to the SG-TEST Clappia apps (idempotent)")
+    ij.add_argument("fixture")
+    ij.add_argument("--dry-run", action="store_true", help="Show the plan; make no API calls at all")
+    ij.add_argument("--allow-live", action="store_true", help="Allow project codes that don't start with FX-")
     a = p.parse_args(argv)
+    if a.cmd == "inject":
+        from stagegate.inject import run_inject
+        return run_inject(a.fixture, dry_run=a.dry_run, allow_live=a.allow_live)
     return preview(a.fixture)
 
 
