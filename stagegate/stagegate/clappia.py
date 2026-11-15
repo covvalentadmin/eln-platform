@@ -156,11 +156,18 @@ class ClappiaClient:
             last = nxt
         else:
             raise ClappiaError(f"getSubmissions on {app_id} exceeded {MAX_PAGES} pages")
-        # belt and braces: re-apply the filter client-side
+        # The client-side re-check is authoritative (server EQ on Select fields is not trusted).
         return [s for s in results
-                if all(str(fv(s).get(k, "")) == str(v) for k, v in (equals or {}).items())]
+                if all(fv(s).get(k, "") == norm_value(v) for k, v in (equals or {}).items())]
+
+
+def norm_value(value) -> str:
+    """Comparable form of a field value: Select lists -> 'a, b'; anything else -> str(value)."""
+    if isinstance(value, list):
+        return ", ".join(str(x) for x in value)
+    return str(value)
 
 
 def fv(submission: dict) -> dict:
-    """Field values of a getSubmissions record."""
-    return submission.get("submissionFieldValues") or {}
+    """Normalised field values of a getSubmissions record (every value is a str)."""
+    return {k: norm_value(v) for k, v in (submission.get("submissionFieldValues") or {}).items()}

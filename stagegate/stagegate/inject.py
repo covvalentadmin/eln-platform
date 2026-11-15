@@ -13,7 +13,8 @@ import sys
 from pathlib import Path
 from typing import Callable, Optional
 
-from stagegate.clappia import DEFAULT_DOTENV, ClappiaClient, ClappiaError, Config, fv, load_dotenv
+from stagegate.clappia import (DEFAULT_DOTENV, ClappiaClient, ClappiaError, Config, fv, load_dotenv,
+                               norm_value)
 from stagegate.engine import build_checklist, load_library
 
 TEST_PREFIX = "FX-"
@@ -46,7 +47,15 @@ def gate_decision_record(project: dict) -> dict:
 
 
 def _changed(existing: dict, wanted: dict) -> dict:
-    return {k: v for k, v in wanted.items() if str(existing.get(k, "")) != str(v)}
+    """Fields of `wanted` that differ from `existing` (already normalised via fv())."""
+    return {k: v for k, v in wanted.items() if existing.get(k, "") != norm_value(v)}
+
+
+def to_select(data: dict, fields) -> dict:
+    """Clappia write format: wrap non-empty Select values as a one-string list. Others unchanged."""
+    fields = set(fields or ())
+    return {k: [str(v)] if k in fields and v not in (None, "") and not isinstance(v, list) else v
+            for k, v in data.items()}
 
 
 def run_inject(fixture: str, dry_run: bool = False, allow_live: bool = False,
@@ -71,7 +80,10 @@ def run_inject(fixture: str, dry_run: bool = False, allow_live: bool = False,
               file=out)
         return EXIT_REFUSED
 
-    items, log = build_checklist(project, sidecar, load_library())
+    lib = load_library()
+    items, log = build_checklist(project, sidecar, lib)
+    sel = lib.settings.get("select_fields") or {}
+    sel_pm, sel_gi, sel_gd = (sel.get(k) for k in ("project_master", "gate_items", "gate_decision"))
     decision = gate_decision_record(project)
     summ = Summary()
     print(f"inject {pc}: {len(items)} checklist items, import log {json.dumps(log)}", file=out)
@@ -100,13 +112,13 @@ def run_inject(fixture: str, dry_run: bool = False, allow_live: bool = False,
         if len(found) > 1:
             raise ClappiaError(f"{len(found)} Project Master records for {pc}; fix duplicates by hand")
         if not found:
-            sid = client.create_submission(cfg.app_project_master, project)
+            sid = client.create_submission(cfg.app_project_master, to_select(project, sel_pm))
             summ.add("created", f"Project Master {pc}", sid)
         else:
             sid = found[0].get("submissionId", "")
             diff = _changed(fv(found[0]), project)
             if diff:
-                client.edit_submission(cfg.app_project_master, sid, diff)
+                client.edit_submission(cfg.app_project_master, sid, to_select(diff, sel_pm))
                 summ.add("updated", f"Project Master {pc}", f"{sid}: {', '.join(sorted(diff))}")
             else:
                 summ.add("skipped", f"Project Master {pc}", f"{sid} unchanged")
@@ -130,7 +142,7 @@ def run_inject(fixture: str, dry_run: bool = False, allow_live: bool = False,
                 summ.add("skipped", f"Gate Item {key}", "already exists")
                 continue
             try:
-                sid = client.create_submission(cfg.app_gate_items, it.to_clappia())
+                sid = client.create_submission(cfg.app_gate_items, to_select(it.to_clappia(), sel_gi))
                 existing.add(key)
                 summ.add("created", f"Gate Item {key}", sid)
             except ClappiaError as ex:
@@ -139,11 +151,14 @@ def run_inject(fixture: str, dry_run: bool = False, allow_live: bool = False,
     # 3. G1 Gate Decision
     target = f"Gate Decision {pc}|{GATE}"
     try:
-        found = client.get_submissions(cfg.app_gate_decision, {"project_code": pc, "gate": GATE})
+        # Server filter on project_code (text) only; gate is a Select field, so match it client-side.
+        found = [s for s in client.get_submissions(cfg.app_gate_decision, {"project_code": pc})
+                 if fv(s).get("gate", "") == GATE]
         if found:
             summ.add("skipped", target, f"{found[0].get('submissionId', '')} already exists")
         else:
-            summ.add("created", target, client.create_submission(cfg.app_gate_decision, decision))
+            summ.add("created", target, client.create_submission(cfg.app_gate_decision,
+                                                                 to_select(decision, sel_gd)))
     except ClappiaError as ex:
         summ.add("error", target, str(ex))
 

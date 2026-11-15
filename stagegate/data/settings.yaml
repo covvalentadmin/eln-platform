@@ -19,3 +19,9 @@ receiving_poc_field:
   G1: rd_lead_email
 # Open decision #3: founder sign-off at G1 as Standard tick (spec default) or Critical approval.
 g1_11_class: Standard
+# Clappia Select/Dropdown fields per app. The API wants these as a list of strings on write
+# ("G1" -> ["G1"]) and returns them as lists on read. Everything else (e.g. target_market) is plain text.
+select_fields:
+  project_master: [end_use, incoterms, transit_temperature, current_stage, traffic_light]
+  gate_items: [gate, source, item_class, hard_stop, ticked, decision, note_category, ack_decision, superseded]
+  gate_decision: [gate, gate_ready, gate_decision, ownership_accepted]

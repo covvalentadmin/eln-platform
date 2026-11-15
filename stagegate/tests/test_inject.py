@@ -8,11 +8,13 @@ from pathlib import Path
 import pytest
 
 from stagegate import clappia
-from stagegate.clappia import ClappiaClient, ClappiaError, Config, load_dotenv, urllib_transport
+from stagegate.clappia import ClappiaClient, ClappiaError, Config, fv, load_dotenv, norm_value, urllib_transport
 from stagegate.engine import build_checklist, load_library
-from stagegate.inject import EXIT_ERRORS, EXIT_OK, EXIT_REFUSED, run_inject
+from stagegate.inject import EXIT_ERRORS, EXIT_OK, EXIT_REFUSED, run_inject, to_select
 
 FX = Path(__file__).resolve().parent.parent / "fixtures"
+_SEL = load_library().settings["select_fields"]
+SELECT = {"PM": set(_SEL["project_master"]), "GI": set(_SEL["gate_items"]), "GD": set(_SEL["gate_decision"])}
 KEY = "sk-test-SECRET-123"
 ENV = {"SG_ENABLED": "true", "CLAPPIA_API_KEY": KEY, "CLAPPIA_USER_EMAIL": "bot@example.com",
        "CLAPPIA_WORKPLACE_ID": "WP1", "SG_APP_PROJECT_MASTER": "PM", "SG_APP_GATE_ITEMS": "GI",
@@ -26,21 +28,44 @@ def no_network(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", boom)
 
 
-class FakeClappia:
-    """In-memory stand-in for the three endpoints, honouring EQ filters and pagination."""
+def wrap(app, data):
+    """Independent expectation of Clappia's write format: Select values as one-string lists."""
+    return {k: [str(v)] if k in SELECT[app] and v not in (None, "") and not isinstance(v, list) else v
+            for k, v in data.items()}
 
-    def __init__(self, page_size=None):
+
+class FakeClappia:
+    """In-memory stand-in for the three endpoints, honouring EQ filters and pagination.
+    Like real Clappia: rejects non-list Select values on write; stores and returns them as lists."""
+
+    def __init__(self, page_size=None, ignore_filters=False, ignore_select_filters=False):
         self.apps = {}
         self.calls = []
         self.fail = {}  # (path, app_id) -> message
         self.n = 0
         self.page_size = page_size
+        self.ignore_filters = ignore_filters
+        self.ignore_select_filters = ignore_select_filters  # server drops conditions on Select fields
 
     def seed(self, app, data):
+        """Pre-existing record, stored as Clappia would hold it (Select values as lists)."""
         self.n += 1
         sid = f"S{self.n:04d}"
-        self.apps.setdefault(app, []).append({"submissionId": sid, "submissionFieldValues": dict(data)})
+        self.apps.setdefault(app, []).append({"submissionId": sid, "submissionFieldValues": wrap(app, data)})
         return sid
+
+    def _check_select(self, app, data):
+        for k, v in data.items():
+            if k in SELECT.get(app, ()) and not isinstance(v, list):
+                raise ClappiaError(f"HTTP 400: Error in Select value {v!r} for field {k!r}: "
+                                   "value should be an array of strings")
+
+    @staticmethod
+    def _matches(stored, value):
+        return value in stored if isinstance(stored, list) else str(stored) == value
+
+    def edits(self):
+        return [b for p, b in self.calls if p.endswith("/edit")]
 
     def creates(self, app=None):
         return [b for p, b in self.calls if p.endswith("/create") and (app is None or b["appId"] == app)]
@@ -55,14 +80,21 @@ class FakeClappia:
             raise ClappiaError(self.fail[(path, body["appId"])])
         recs = self.apps.setdefault(body["appId"], [])
         if path == "/submissions/create":
-            return {"submissionId": self.seed(body["appId"], body["data"])}
+            self._check_select(body["appId"], body["data"])
+            self.n += 1
+            sid = f"S{self.n:04d}"
+            recs.append({"submissionId": sid, "submissionFieldValues": dict(body["data"])})
+            return {"submissionId": sid}
         if path == "/submissions/edit":
+            self._check_select(body["appId"], body["data"])
             rec = next(r for r in recs if r["submissionId"] == body["submissionId"])
             rec["submissionFieldValues"].update(body["data"])
             return {}
         if path == "/submissions/getSubmissions":
-            conds = [c for q in (body.get("filters") or {}).get("queries", []) for c in q["conditions"]]
-            hits = [r for r in recs if all(str(r["submissionFieldValues"].get(c["key"])) == c["value"]
+            conds = [] if self.ignore_filters else [
+                c for q in (body.get("filters") or {}).get("queries", []) for c in q["conditions"]
+                if not (self.ignore_select_filters and c["key"] in SELECT.get(body["appId"], ()))]
+            hits = [r for r in recs if all(self._matches(r["submissionFieldValues"].get(c["key"]), c["value"])
                                            for c in conds)]
             if body.get("lastSubmissionId"):
                 ids = [r["submissionId"] for r in hits]
@@ -133,22 +165,97 @@ def test_fresh_inject_creates_everything():
     project, items = expected_items()
     assert code == EXIT_OK
     assert fake.creates("PM") == [{"appId": "PM", "workplaceId": "WP1",
-                                   "requestingUserEmailAddress": "bot@example.com", "data": project}]
-    assert [c["data"] for c in fake.creates("GI")] == [i.to_clappia() for i in items]
+                                   "requestingUserEmailAddress": "bot@example.com", "data": wrap("PM", project)}]
+    assert [c["data"] for c in fake.creates("GI")] == [wrap("GI", i.to_clappia()) for i in items]
     (dec,) = fake.creates("GD")
-    assert dec["data"] == {"project_code": "FX-1", "gate": "G1", "receiving_poc_email": project["rd_lead_email"]}
+    assert dec["data"] == {"project_code": "FX-1", "gate": ["G1"], "receiving_poc_email": project["rd_lead_email"]}
     assert f"created={len(items) + 2}" in out and "skipped=0" in out and "error=0" in out
 
 
-def test_rerun_is_idempotent():
+def test_fresh_run_creates_18_records_with_select_values_as_lists():
+    fake = FakeClappia()
+    code, _ = run(fake)
+    creates = fake.creates()
+    assert code == EXIT_OK and len(creates) == 18  # 1 Project Master + 16 Gate Items + 1 Gate Decision
+    for c in creates:
+        for k, v in c["data"].items():
+            if k in SELECT[c["appId"]]:
+                assert isinstance(v, list) and len(v) == 1 and isinstance(v[0], str), (c["appId"], k, v)
+            else:
+                assert not isinstance(v, list), (c["appId"], k, v)
+    pm = fake.creates("PM")[0]["data"]
+    assert pm["end_use"] == ["Specialty / industrial"] and pm["incoterms"] == ["CIF"]
+    assert pm["transit_temperature"] == ["Ambient"] and pm["target_market"] == "EU"
+    gi = fake.creates("GI")[0]["data"]
+    assert gi["gate"] == ["G1"] and gi["hard_stop"] == ["No"] and gi["superseded"] == ["No"]
+    assert isinstance(gi["idempotency_key"], str)
+
+
+def test_rerun_with_list_valued_reads_creates_and_edits_nothing():
     fake = FakeClappia()
     run(fake)
+    # stored records really are list-valued for Select fields
+    assert fake.apps["GI"][0]["submissionFieldValues"]["gate"] == ["G1"]
+    assert fake.apps["PM"][0]["submissionFieldValues"]["end_use"] == ["Specialty / industrial"]
     before = len(fake.creates())
     code, out = run(fake)
     _, items = expected_items()
-    assert code == EXIT_OK and len(fake.creates()) == before
-    assert not [c for c in fake.calls if c[0].endswith("/edit")]
-    assert f"skipped={len(items) + 2}" in out and "created=0" in out
+    assert code == EXIT_OK and len(fake.creates()) == before and fake.edits() == []
+    assert f"skipped={len(items) + 2}" in out and "created=0" in out and "updated=0" in out
+
+
+def test_select_field_change_edits_as_list():
+    fake = FakeClappia()
+    project, _ = expected_items()
+    sid = fake.seed("PM", {**project, "incoterms": "FOB"})
+    code, _ = run(fake)
+    assert code == EXIT_OK
+    assert [e["data"] for e in fake.edits()] == [{"incoterms": ["CIF"]}] and fake.edits()[0]["submissionId"] == sid
+
+
+def test_existing_g1_decision_found_when_server_ignores_select_filters():
+    fake = FakeClappia(ignore_select_filters=True)
+    fake.seed("GD", {"project_code": "FX-1", "gate": "G2", "receiving_poc_email": "x@y"})
+    g1 = fake.seed("GD", {"project_code": "FX-1", "gate": "G1", "receiving_poc_email": "x@y"})
+    fake.seed("GD", {"project_code": "FX-OTHER", "gate": "G1", "receiving_poc_email": "x@y"})
+    code, out = run(fake)
+    assert code == EXIT_OK and fake.creates("GD") == []
+    assert f"skipped      Gate Decision FX-1|G1  -- {g1} already exists" in out
+    gd_reads = [b for p, b in fake.calls if p.endswith("getSubmissions") and b["appId"] == "GD"]
+    assert [c["key"] for c in gd_reads[0]["filters"]["queries"][0]["conditions"]] == ["project_code"]
+    before = len(fake.creates())
+    code, _ = run(fake)  # full re-run against the same server: nothing new at all
+    assert code == EXIT_OK and len(fake.creates()) == before and fake.edits() == []
+
+
+def test_client_side_recheck_is_authoritative():
+    fake = FakeClappia(ignore_filters=True)  # server returns everything, filters ignored
+    project, items = expected_items()
+    fake.seed("PM", {**project, "project_code": "FX-OTHER"})
+    fake.seed("GD", {"project_code": "FX-1", "gate": "G2", "receiving_poc_email": "x@y"})
+    fake.seed("GD", {"project_code": "FX-OTHER", "gate": "G1", "receiving_poc_email": "x@y"})
+    fake.seed("GI", {**items[0].to_clappia(), "project_code": "FX-OTHER", "idempotency_key": items[1].idempotency_key})
+    code, _ = run(fake)
+    assert code == EXIT_OK
+    assert len(fake.creates("PM")) == 1 and fake.edits() == []
+    assert len(fake.creates("GI")) == len(items)
+    assert [c["data"]["gate"] for c in fake.creates("GD")] == [["G1"]]
+
+
+def test_fake_rejects_plain_select_value():
+    fake = FakeClappia()
+    c = ClappiaClient(Config.from_env(ENV), transport=fake)
+    with pytest.raises(ClappiaError, match="array of strings"):
+        c.create_submission("GI", {"gate": "G1"})
+
+
+def test_to_select_and_norm_value():
+    data = {"gate": "G1", "item_class": "", "hard_stop": None, "source": ["Core"], "item_title": "x", "n": 3}
+    assert to_select(data, ["gate", "item_class", "hard_stop", "source"]) == {
+        "gate": ["G1"], "item_class": "", "hard_stop": None, "source": ["Core"], "item_title": "x", "n": 3}
+    assert to_select(data, None) == data
+    assert norm_value(["a", 1]) == "a, 1" and norm_value(85) == "85" and norm_value("G1") == "G1"
+    assert fv({"submissionFieldValues": {"gate": ["G1"], "kickoff_score": 3}}) == {"gate": "G1", "kickoff_score": "3"}
 
 
 def test_only_missing_items_created():
