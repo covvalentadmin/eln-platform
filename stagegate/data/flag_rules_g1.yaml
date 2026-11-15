@@ -1,0 +1,161 @@
+# Dynamic flag library — rules injected at G1 (MVP v0.1 subset: 15 of 52)
+# Source: spec section "Dynamic flag library"; G1 list from "G1 — Proposal submission".
+# default_class is used only when no kickoff score is present (e.g. a mandatory item).
+# A kickoff score always overrides it: 5/4 -> Critical, 3 -> Note.
+# hard_stop: true means a Critical instance of this rule blocks the gate until approved.
+version: 1
+rules:
+  # --- Sourcing ---
+  - id: DF-S1
+    stage: Sourcing
+    trigger: Stockholm POP, REACH Annex XIV or CSCL Class I input
+    item: Route change approved for restricted input
+    criterion: Route change approved; replacement input clears all watchlists
+    gates: [G1]
+    default_class: Critical
+    hard_stop: true
+    approver_roles: [Founders, CSIO]
+    learning_ids: [S-004]
+  - id: DF-S2
+    stage: Sourcing
+    trigger: "<= 1 credible supplier or all supply in one province"
+    item: Supply base diversified
+    criterion: ">= 2 suppliers in >= 2 geographies identified, or route change approved"
+    gates: [G1]
+    default_class: Critical
+    hard_stop: true
+    approver_roles: [Founders]
+    learning_ids: [S-001]
+  - id: DF-S5
+    stage: Sourcing
+    trigger: REACH SVHC input
+    item: SVHC sourcing risk recorded
+    criterion: EU sourcing erosion noted; alternative input named
+    gates: [G1]
+    default_class: Note
+    hard_stop: false
+    approver_roles: []
+    learning_ids: [S-003]
+  # --- R&D ---
+  - id: DF-R1
+    stage: R&D
+    trigger: Live composition-of-matter patent in target market
+    item: Composition-of-matter patent resolved
+    criterion: Project paused or market changed
+    gates: [G1]
+    default_class: Critical
+    hard_stop: true
+    approver_roles: [Founders, CSIO]
+    learning_ids: []
+  - id: DF-R2
+    stage: R&D
+    trigger: Live process patent on route
+    item: Process patent freedom-to-operate
+    criterion: Written freedom-to-operate opinion; non-infringing route documented (owner named at G1, closed at G2)
+    gates: [G1, G2]
+    default_class: Critical
+    hard_stop: false
+    approver_roles: [Founders]
+    learning_ids: []
+  - id: DF-R3
+    stage: R&D
+    trigger: Pending application or expiry <= 18 months of launch
+    item: Patent expiry monitored
+    criterion: Expiry vs launch date logged; monitoring owner named
+    gates: [G1]
+    default_class: Note
+    hard_stop: false
+    approver_roles: []
+    learning_ids: [R-001]
+  - id: DF-R5
+    stage: R&D
+    trigger: ICH Q3C Class 1 solvent
+    item: Class 1 solvent removed from route
+    criterion: Solvent replaced in route
+    gates: [G1]
+    default_class: Critical
+    hard_stop: true
+    approver_roles: [CSIO]
+    learning_ids: [R-004]
+  - id: DF-R11
+    stage: R&D
+    trigger: Cumulative yield < 40%
+    item: Low-yield cost sensitivity
+    criterion: RMC sensitivity at +/-10% yield attached
+    gates: [G1]
+    default_class: Note
+    hard_stop: false
+    approver_roles: []
+    learning_ids: []
+  # --- Regulatory ---
+  - id: DF-G1
+    stage: Regulatory
+    trigger: DEA / NDPS / EU precursor / CWC Schedule 2-3 chemical
+    item: Controlled-substance licence
+    criterion: Licence applied at G1; granted before first purchase and before G3
+    gates: [G1, G3]
+    default_class: Critical
+    hard_stop: false
+    approver_roles: [Regulatory head, Founders]
+    learning_ids: []
+  - id: DF-G2
+    stage: Regulatory
+    trigger: CWC Schedule 1 chemical
+    item: CWC Schedule 1 — project paused
+    criterion: Project paused
+    gates: [G1]
+    default_class: Critical
+    hard_stop: true
+    approver_roles: [Founders]
+    learning_ids: []
+  - id: DF-G6
+    stage: Regulatory
+    trigger: End use and target market inconsistent
+    item: End use and market confirmed
+    criterion: Customer confirmation of end use and market on record
+    gates: [G1]
+    default_class: Critical
+    hard_stop: false
+    approver_roles: [Founders]
+    learning_ids: [REG-001]
+  - id: DF-G7
+    stage: Regulatory
+    trigger: Monograph cited does not exist
+    item: Customer spec clarified
+    criterion: Customer spec clarification on record
+    gates: [G1]
+    default_class: Note
+    hard_stop: false
+    approver_roles: []
+    learning_ids: [REG-004]
+  # --- Logistics ---
+  - id: DF-L2
+    stage: Logistics
+    trigger: Mode restriction at volume, e.g. air-only > 1 MT
+    item: Shipping mode and landed cost confirmed
+    criterion: Mode, carrier and landed cost confirmed in proposal
+    gates: [G1]
+    default_class: Critical
+    hard_stop: false
+    approver_roles: [Founders]
+    learning_ids: [LOG-002]
+  - id: DF-L5
+    stage: Logistics
+    trigger: Anti-dumping, export duty or BIS flag on HS code
+    item: Duty in landed cost
+    criterion: Duty included in proposal landed cost
+    gates: [G1]
+    default_class: Note
+    hard_stop: false
+    approver_roles: []
+    learning_ids: []
+  - id: DF-L7
+    stage: Logistics
+    trigger: Destination-specific rules (labels, pre-import registration, port limits)
+    item: Destination requirements listed
+    criterion: Requirements listed at G1; documents ready at G4
+    gates: [G1, G4]
+    default_class: Note
+    hard_stop: false
+    approver_roles: []
+    learning_ids: []

@@ -1,0 +1,59 @@
+{
+  "_expect": "Blocked: three score-5 hard stops at G1 (two mapped, one unmapped), one Note",
+  "project": {
+    "project_code": "FX-3",
+    "product": "Synthetic blocked intermediate",
+    "cas_number": "0000-03-3",
+    "specification": "Purity >= 99.0% HPLC; single impurity <= 0.10%",
+    "volume": "2 MT/yr",
+    "timeline": "Q3 2027",
+    "target_price_usd_kg": 85,
+    "end_use": "Agrochemical",
+    "target_market": "India",
+    "destination": "Mumbai, IN",
+    "incoterms": "CIF",
+    "transit_temperature": "Ambient",
+    "bd_poc_email": "sales.crams@covvalent.com",
+    "rd_lead_email": "devendar.vanga@covvalent.com",
+    "founder_approver_email": "aqeedat.kaur.sandhu@covvalent.com",
+    "csio_approver_email": "aqeedat.kaur.sandhu@covvalent.com"
+  },
+  "sidecar": {
+    "project_code": "FX-3",
+    "run_id": "FX-3-run1",
+    "run_date": "2026-11-13",
+    "rows": [
+      {
+        "stage": "R&D",
+        "risk": "Route uses benzene (ICH Q3C Class 1)",
+        "score": 5,
+        "confidence": "High",
+        "evidence": "Route scheme",
+        "learning_id": "R-004"
+      },
+      {
+        "stage": "Sourcing",
+        "risk": "Only one credible KSM supplier, single province",
+        "score": 5,
+        "confidence": "High",
+        "evidence": "Supplier scan",
+        "learning_id": "S-001"
+      },
+      {
+        "stage": "Regulatory",
+        "risk": "Supplier country under sanctions review",
+        "score": 5,
+        "confidence": "Medium",
+        "evidence": "News scan"
+      },
+      {
+        "stage": "R&D",
+        "risk": "Cumulative yield estimated 32%",
+        "score": 3,
+        "confidence": "Medium",
+        "evidence": "Route estimate",
+        "rule_id": "DF-R11"
+      }
+    ]
+  }
+}

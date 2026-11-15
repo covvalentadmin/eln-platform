@@ -1,0 +1,71 @@
+# G1 core checklist — Proposal submission (BD -> R&D)
+# Source: Stage-Gate Workflow & Dynamic Checklists spec, 13 Nov 2026, section "G1 — Proposal submission"
+# Every core item is class Standard unless overridden in settings (see g1_11_class).
+version: 1
+gate: G1
+items:
+  - id: G1-01
+    item: Enquiry captured
+    criterion: "All 11 Project Master fields filled: product, CAS, spec, volume, timeline, target price, end use, target market, destination, Incoterms, transit temperature"
+    evidence: Project Master record
+    owner_role: BD POC
+  - id: G1-02
+    item: Confidentiality in place
+    criterion: CDA/NDA signed by both parties
+    evidence: "PDF in 01 Proposal"
+    owner_role: BD POC
+  - id: G1-03
+    item: Identity verified
+    criterion: Name, CAS and structure agree; SMILES and InChIKey recorded
+    evidence: Kickoff Scope of Pass
+    owner_role: R&D POC
+  - id: G1-04
+    item: Route drafted
+    criterion: Every route entity has a CAS RN and role (KSM, reagent, solvent, intermediate)
+    evidence: "Route scheme in 01 Proposal"
+    owner_role: R&D POC
+  - id: G1-05
+    item: Kickoff risk assessment run
+    criterion: All 5 stages run; KickOff and Summary files saved; rows imported = rows in register
+    evidence: Flag Register import log
+    owner_role: PM
+  - id: G1-06
+    item: No blockers open
+    criterion: Zero score-5 rows with status Open
+    evidence: Flag Register filter
+    owner_role: PM
+  - id: G1-07
+    item: High risks owned
+    criterion: Every score-4 row has an owner and target gate
+    evidence: Flag Register
+    owner_role: PM
+  - id: G1-08
+    item: Analytical feasibility
+    criterion: Method available, or development planned, for every spec parameter
+    evidence: Method matrix
+    owner_role: Analytical lead
+  - id: G1-09
+    item: Costing done
+    criterion: "RMC Current revision (basis: Lab estimate) synced; price/kg vs target >= margin floor"
+    evidence: Clappia RMC app
+    owner_role: Costing owner
+  - id: G1-10
+    item: R&D team tagged
+    criterion: Lead R&D scientist and assigned chemist(s) selected; tagged users are notified and become receiving POCs
+    evidence: Project Master user fields
+    owner_role: BD POC
+  - id: G1-11
+    item: Founder sign-off
+    criterion: Founder ticks the technical + commercial proposal (landed cost per Incoterms) before it is sent
+    evidence: Clappia tick with timestamp
+    owner_role: Founder
+  - id: G1-12
+    item: Proposal submitted
+    criterion: Signed-off proposal sent to client; submission date logged
+    evidence: "File in 01 Proposal, sent email"
+    owner_role: BD POC
+  - id: G1-13
+    item: Sample initiation confirmed (gate trigger)
+    criterion: Client PO, LOI or written instruction to start sample development; date logged; R&D may not charge an experiment before this and G1-01 to G1-12 are complete
+    evidence: "File in 01 Proposal"
+    owner_role: BD POC

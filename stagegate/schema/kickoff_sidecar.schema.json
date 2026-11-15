@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Kickoff register sidecar (stage-gate MVP v0.1)",
+  "description": "ASSUMPTION: the register's 5 fields are risk, score, confidence, evidence, learning_id. Confirm against the kickoff skill before v0.2. rule_id and learning_match are optional engine hints.",
+  "type": "object",
+  "required": ["project_code", "run_id", "run_date", "rows"],
+  "properties": {
+    "project_code": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "run_date": {"type": "string", "format": "date"},
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["stage", "risk", "score", "confidence"],
+        "properties": {
+          "stage": {"enum": ["Sourcing", "R&D", "Scaleup", "Regulatory", "Logistics"]},
+          "risk": {"type": "string", "minLength": 1},
+          "score": {"type": "integer", "minimum": 1, "maximum": 5},
+          "confidence": {"enum": ["Low", "Medium", "High"]},
+          "evidence": {"type": "string"},
+          "learning_id": {"type": ["string", "null"]},
+          "rule_id": {"type": ["string", "null"], "description": "Explicit DF rule when no learning ID maps"},
+          "learning_match": {"type": "boolean", "description": "Covvalent learning matched: raises Note to Critical"}
+        }
+      }
+    },
+    "mandatory": {
+      "type": "array",
+      "description": "Kickoff mandatory items (hazardous reaction, extreme conditions, licences, DG, HS code, transit temperature)",
+      "items": {
+        "type": "object",
+        "required": ["rule_id", "breach"],
+        "properties": {
+          "rule_id": {"type": "string"},
+          "breach": {"type": "boolean"},
+          "detail": {"type": "string"}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,26 @@
+# Kickoff learning IDs whose rules are NOT loaded in MVP v0.1 (gates G2-G4).
+# G1 learning IDs are read from flag_rules_g1.yaml directly.
+# A row matching one of these still becomes a generic item at the target gate
+# (never dropped), until v0.2+ loads the full rule.
+# Source: spec "Dynamic flag library" (learning IDs in each Trigger column).
+version: 1
+deferred:
+  S-002:   {rule: DF-S7,  gate: G3}
+  R-002:   {rule: DF-R7,  gate: G2}
+  R-003:   {rule: DF-R6,  gate: G2}
+  R-005:   {rule: DF-R10, gate: G2}
+  R-006:   {rule: DF-R9,  gate: G2}
+  TT-001:  {rule: DF-T1,  gate: G3}
+  TT-002:  {rule: DF-T2,  gate: G3}
+  TT-003:  {rule: DF-T5,  gate: G3}
+  TT-004:  {rule: DF-T10, gate: G4}
+  TT-005:  {rule: DF-T6,  gate: G2}
+  TT-006:  {rule: DF-T7,  gate: G3}
+  REG-002: {rule: DF-G4,  gate: G3}
+  REG-003: {rule: DF-G5,  gate: G4}
+  REG-006: {rule: DF-G8,  gate: G3}
+  LOG-001: {rule: DF-L6,  gate: G4}
+  LOG-003: {rule: DF-L3,  gate: G4}
+  LOG-004: {rule: DF-L6,  gate: G4}
+  LOG-005: {rule: DF-L4,  gate: G4}
+  LOG-006: {rule: DF-L6,  gate: G4}

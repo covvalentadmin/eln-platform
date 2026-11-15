@@ -1,0 +1,21 @@
+# Engine settings for MVP v0.1.
+# role_fields maps a role named in templates/rules to the Project Master field holding that person's email.
+# Roles with no field yet (Regulatory head, Analytical lead, Costing owner, PM) fall back as listed;
+# fallbacks are flagged in the item so nobody mistakes them for the real role holder.
+version: 1
+role_fields:
+  BD POC: bd_poc_email
+  R&D POC: rd_lead_email
+  Founder: founder_approver_email
+  Founders: founder_approver_email
+  CSIO: csio_approver_email
+role_fallbacks:
+  PM: bd_poc_email
+  Analytical lead: rd_lead_email
+  Costing owner: bd_poc_email
+  Regulatory head: founder_approver_email
+# Receiving POC per gate: acknowledges Notes and e-signs ownership.
+receiving_poc_field:
+  G1: rd_lead_email
+# Open decision #3: founder sign-off at G1 as Standard tick (spec default) or Critical approval.
+g1_11_class: Standard
