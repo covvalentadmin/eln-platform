@@ -16,6 +16,18 @@ def test_red_on_open_hard_stop_at_any_gate():
     assert r["traffic_light"] == "Red" and r["blockers"].startswith("HARD STOP: DF-T1")
 
 
+def test_hard_stop_listed_once_and_open_critical_is_union():
+    r = evaluate([rec("DF-R5", "Critical", "Awaiting decision", hard="Yes"),
+                  rec("DF-S2", "Critical", "Awaiting decision", hard="Yes"),
+                  rec("DF-G1", "Critical", "Awaiting decision"),
+                  rec("DF-T1", "Critical", "Awaiting decision", gate="G3", hard="Yes"),
+                  rec("G1-01", "Standard", "Open")], "G1")
+    assert r["blockers"] == "HARD STOP: DF-R5, DF-S2, DF-T1 | Critical: DF-G1 | Standard: G1-01"
+    assert r["open_critical"] == 4  # union of G1 Criticals and hard stops at any gate
+    only_hard = evaluate([rec("DF-R5", "Critical", "Awaiting decision", hard="Yes")], "G1")
+    assert only_hard["blockers"] == "HARD STOP: DF-R5" and only_hard["open_critical"] == 1
+
+
 def test_amber_when_criticals_decided_but_items_open():
     r = evaluate([rec("DF-S2", "Critical", "Approve with conditions"),
                   rec("G1-02", "Standard", "Open"),

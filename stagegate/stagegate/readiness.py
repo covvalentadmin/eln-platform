@@ -36,11 +36,14 @@ def evaluate(records: list, gate: str) -> dict:
     else:
         light = "Ready"
 
+    # Each item is listed once: an open hard stop appears under HARD STOP only, not again under Critical.
+    hard_ids = {r["item_id"] for r in hard_open}
+    crit_only = sorted(r["item_id"] for r in crit if r["item_id"] not in hard_ids)
     parts = []
     if hard_open:
-        parts.append("HARD STOP: " + ", ".join(sorted({r["item_id"] for r in hard_open})))
-    if crit:
-        parts.append("Critical: " + ", ".join(sorted(r["item_id"] for r in crit)))
+        parts.append("HARD STOP: " + ", ".join(sorted(hard_ids)))
+    if crit_only:
+        parts.append("Critical: " + ", ".join(crit_only))
     if std:
         parts.append("Standard: " + ", ".join(sorted(r["item_id"] for r in std)))
     if notes:

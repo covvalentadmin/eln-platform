@@ -76,8 +76,10 @@ def test_fx3_is_red_on_hard_stops():
     code, out = run(fake, "FX-3")
     blockers = edit_for(fake, "GD")["blockers"]
     assert code == EXIT_OK and "status FX-3 G1: Red" in out
-    assert blockers.startswith(f"HARD STOP: DF-R5, DF-S2, {ko} |") and ko.startswith("KO-")
-    assert edit_for(fake, "PM")["traffic_light"] == ["Red"]
+    assert blockers.startswith(f"HARD STOP: DF-R5, DF-S2, {ko} | Standard: G1-01") and ko.startswith("KO-")
+    assert "Critical:" not in blockers  # hard stops are listed once
+    assert blockers.endswith("| Notes: DF-R11")
+    assert edit_for(fake, "PM")["traffic_light"] == ["Red"] and edit_for(fake, "PM")["open_critical"] == "3"
 
 
 def test_all_closed_pass_and_accepted_is_green():
