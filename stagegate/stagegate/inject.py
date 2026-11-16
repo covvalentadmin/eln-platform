@@ -68,26 +68,41 @@ def to_payload(data: dict, select_fields) -> dict:
     return out
 
 
+def load_config(env: Optional[dict], dotenv_path: Optional[Path]) -> Config:
+    """env=None: real environment plus .env (tests pass an explicit dict and never touch .env)."""
+    if env is None:
+        load_dotenv(dotenv_path)
+        return Config.from_env()
+    return Config.from_env(env)
+
+
+def guard_enabled(cfg: Config, cmd: str, out) -> bool:
+    if not cfg.enabled:
+        print(f"SG_ENABLED is not 'true'; {cmd} disabled. Nothing done.", file=out)
+        return False
+    return True
+
+
+def guard_project(pc: str, allow_live: bool, out) -> bool:
+    if not pc.startswith(TEST_PREFIX) and not allow_live:
+        print(f"Refusing project_code {pc!r}: not a {TEST_PREFIX}* test project. Pass --allow-live to override.",
+              file=out)
+        return False
+    return True
+
+
 def run_inject(fixture: str, dry_run: bool = False, allow_live: bool = False,
                env: Optional[dict] = None, dotenv_path: Optional[Path] = DEFAULT_DOTENV,
                client_factory: Callable[[Config], ClappiaClient] = ClappiaClient,
                out=sys.stdout) -> int:
-    if env is None:
-        load_dotenv(dotenv_path)
-        cfg = Config.from_env()
-    else:
-        cfg = Config.from_env(env)
-
-    if not cfg.enabled:
-        print("SG_ENABLED is not 'true'; inject disabled. Nothing done.", file=out)
+    cfg = load_config(env, dotenv_path)
+    if not guard_enabled(cfg, "inject", out):
         return EXIT_REFUSED
 
     data = json.load(open(fixture, encoding="utf-8"))
     project, sidecar = data["project"], data["sidecar"]
     pc = project.get("project_code") or sidecar.get("project_code") or ""
-    if not pc.startswith(TEST_PREFIX) and not allow_live:
-        print(f"Refusing project_code {pc!r}: not a {TEST_PREFIX}* test project. Pass --allow-live to override.",
-              file=out)
+    if not guard_project(pc, allow_live, out):
         return EXIT_REFUSED
 
     lib = load_library()

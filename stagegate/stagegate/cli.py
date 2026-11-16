@@ -1,4 +1,4 @@
-"""stagegate CLI — v0.1. `preview` (offline dry run), `inject` (Clappia write). Day 4 adds `status`."""
+"""stagegate CLI — v0.1. `preview` (offline dry run), `inject` (Clappia write), `status` (traffic light)."""
 import argparse
 import json
 import sys
@@ -29,7 +29,17 @@ def main(argv=None) -> int:
     ij.add_argument("fixture")
     ij.add_argument("--dry-run", action="store_true", help="Show the plan; make no API calls at all")
     ij.add_argument("--allow-live", action="store_true", help="Allow project codes that don't start with FX-")
+    st = sub.add_parser("status", help="Compute the G1 traffic light from Clappia and write it back")
+    st.add_argument("fixture", nargs="?", help="Fixture JSON (project_code is read from it)")
+    st.add_argument("--project", help="Project code, e.g. FX-1 (instead of a fixture)")
+    st.add_argument("--dry-run", action="store_true", help="Simulate from the fixture; make no API calls at all")
+    st.add_argument("--allow-live", action="store_true", help="Allow project codes that don't start with FX-")
     a = p.parse_args(argv)
+    if a.cmd == "status":
+        if bool(a.fixture) == bool(a.project):
+            st.error("give exactly one of: a fixture path, or --project")
+        from stagegate.status import run_status
+        return run_status(a.fixture, a.project, dry_run=a.dry_run, allow_live=a.allow_live)
     if a.cmd == "inject":
         from stagegate.inject import run_inject
         return run_inject(a.fixture, dry_run=a.dry_run, allow_live=a.allow_live)
