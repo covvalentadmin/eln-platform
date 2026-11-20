@@ -1,6 +1,14 @@
 # G1 core checklist — Proposal submission (BD -> R&D)
 # Source: Stage-Gate Workflow & Dynamic Checklists spec, 13 Nov 2026, section "G1 — Proposal submission"
 # Every core item is class Standard unless overridden in settings (see g1_11_class).
+# Item keys (validated on load; unknown keys/values are errors):
+#   id, item, criterion, owner_role (required; owner_role from settings.yaml role_fields/role_fallbacks)
+#   evidence      optional text
+#   class         Standard | Critical | Note                      (default Standard)
+#   hard_stop     true | false; true only on Critical             (default false)
+#   approver_role role from settings.yaml; required on Critical/Note, not allowed on Standard.
+#                 A Note may use "Receiving POC" (routes to the gate's receiving POC, like flag-rule Notes).
+#   checkpoint    pre_experiment | pre_coa | gate; internal only, never sent to Clappia  (default gate)
 version: 1
 gate: G1
 items:

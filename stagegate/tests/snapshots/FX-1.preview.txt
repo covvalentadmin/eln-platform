@@ -1,0 +1,19 @@
+GATE ITEM       CLASS    HS SRC        APPROVER/ACK
+G1   G1-01      Standard -  core       
+G1   G1-02      Standard -  core       
+G1   G1-03      Standard -  core       
+G1   G1-04      Standard -  core       
+G1   G1-05      Standard -  core       
+G1   G1-06      Standard -  core       
+G1   G1-07      Standard -  core       
+G1   G1-08      Standard -  core       
+G1   G1-09      Standard -  core       
+G1   G1-10      Standard -  core       
+G1   G1-11      Standard -  core       
+G1   G1-12      Standard -  core       
+G1   G1-13      Standard -  core       
+G1   DF-L5      Note     -  kickoff    devendar.vanga@covvalent.com
+G1   DF-R3      Note     -  kickoff    devendar.vanga@covvalent.com
+G1   DF-S5      Note     -  kickoff    devendar.vanga@covvalent.com
+
+import log: {"run_id": "FX-1-run1", "rows_read": 5, "rows_imported": 3, "rows_skipped_low_score": 2, "rows_unmapped": 0, "rows_deferred_rule": 0, "mandatory_read": 0}

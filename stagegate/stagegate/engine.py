@@ -26,6 +26,18 @@ RANK = {"Standard": 0, "Note": 1, "Critical": 2}
 STAGES = {"Sourcing", "R&D", "Scaleup", "Regulatory", "Logistics"}
 CONFIDENCE = {"Low", "Medium", "High"}
 
+# Core template schema (V2-01). Optional keys default so that an item without them behaves as before.
+CORE_REQUIRED = ("id", "item", "criterion", "owner_role")
+CORE_OPTIONAL = {"evidence": None, "class": "Standard", "hard_stop": False,
+                 "approver_role": None, "checkpoint": "gate"}
+CORE_CLASSES = ("Standard", "Critical", "Note")
+CHECKPOINTS = ("pre_experiment", "pre_coa", "gate")
+RECEIVING_POC = "Receiving POC"  # Note-only approver_role: routes like flag-rule Notes
+
+
+class TemplateError(ValueError):
+    pass
+
 
 # ---------------------------------------------------------------- library
 @dataclass(frozen=True)
@@ -37,19 +49,84 @@ class Library:
     settings: dict
 
 
+def load_core_template(path: Path, settings: dict) -> list:
+    """Load and validate one gate's core template. Returns items with every optional key filled
+    in and the file's `gate` attached. Raises TemplateError naming the file, item and key."""
+    path = Path(path)
+    with open(path, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh) or {}
+    roles = set(settings.get("role_fields") or {}) | set(settings.get("role_fallbacks") or {})
+    errs, out, seen = [], [], set()
+
+    def err(item_id, key, msg):
+        errs.append(f"{path.name}: item {item_id}: key '{key}': {msg}")
+
+    gate = doc.get("gate")
+    if not isinstance(gate, str) or not gate:
+        errs.append(f"{path.name}: key 'gate': required non-empty string")
+    items = doc.get("items")
+    if not isinstance(items, list):
+        raise TemplateError(f"{path.name}: key 'items': required list")
+
+    for n, raw in enumerate(items):
+        if not isinstance(raw, dict):
+            errs.append(f"{path.name}: items[{n}]: must be a mapping")
+            continue
+        iid = raw.get("id") or f"items[{n}]"
+        for k in sorted(set(raw) - set(CORE_REQUIRED) - set(CORE_OPTIONAL)):
+            err(iid, k, "unknown key")
+        for k in CORE_REQUIRED:
+            if not isinstance(raw.get(k), str) or not raw.get(k):
+                err(iid, k, "required non-empty string")
+        if raw.get("id"):
+            if raw["id"] in seen:
+                err(iid, "id", "duplicate item ID")
+            seen.add(raw["id"])
+        c = {**CORE_OPTIONAL, **raw, "gate": gate}
+
+        if c["class"] not in CORE_CLASSES:
+            err(iid, "class", f"unknown value {c['class']!r}; allowed {list(CORE_CLASSES)}")
+        if not isinstance(c["hard_stop"], bool):
+            err(iid, "hard_stop", f"must be true or false, got {c['hard_stop']!r}")
+        elif c["hard_stop"] and c["class"] != "Critical":
+            err(iid, "hard_stop", f"true is only allowed on class Critical (class is {c['class']})")
+        if c["checkpoint"] not in CHECKPOINTS:
+            err(iid, "checkpoint", f"unknown value {c['checkpoint']!r}; allowed {list(CHECKPOINTS)}")
+        if raw.get("owner_role") and c["owner_role"] not in roles:
+            err(iid, "owner_role", f"unknown role {c['owner_role']!r}; allowed {sorted(roles)}")
+
+        ar = c["approver_role"]
+        if c["class"] == "Standard":
+            if ar is not None:
+                err(iid, "approver_role", "not allowed on class Standard")
+        elif c["class"] in ("Critical", "Note"):
+            allowed = roles | ({RECEIVING_POC} if c["class"] == "Note" else set())
+            if ar is None:
+                err(iid, "approver_role", f"required on class {c['class']}")
+            elif ar not in allowed:
+                err(iid, "approver_role", f"unknown role {ar!r} for class {c['class']}; allowed {sorted(allowed)}")
+        out.append(c)
+
+    if errs:
+        raise TemplateError("invalid core template:\n  " + "\n  ".join(errs))
+    return out
+
+
 def load_library(data_dir: Path = DATA_DIR) -> Library:
     def y(name):
         with open(data_dir / name, encoding="utf-8") as fh:
             return yaml.safe_load(fh)
 
-    core = y("g1_core.yaml")["items"]
+    settings = y("settings.yaml")
+    core = load_core_template(data_dir / "g1_core.yaml", settings)
     rules = {r["id"]: r for r in y("flag_rules_g1.yaml")["rules"]}
     l2r = {lid: r["id"] for r in rules.values() for lid in r.get("learning_ids", [])}
     deferred = y("learning_map_deferred.yaml")["deferred"]
     overlap = set(l2r) & set(deferred)
     if overlap:
         raise ValueError(f"learning IDs mapped twice: {sorted(overlap)}")
-    return Library(core, rules, l2r, deferred, y("settings.yaml"))
+    return Library(core, rules, l2r, deferred, settings)
+
 
 
 # ---------------------------------------------------------------- model
@@ -69,6 +146,9 @@ class Item:
     approver_role: str = ""
     approver_email: str = ""
     role_fallback: bool = False
+    # Internal only, never sent to Clappia (not in to_clappia()):
+    approver_roles: list = field(default_factory=list)  # core-template approver; flag rules use the rule's
+    checkpoint: str = "gate"
 
     @property
     def idempotency_key(self) -> str:
@@ -238,29 +318,36 @@ def build_checklist(project: dict, sidecar: dict, lib: Library) -> tuple:
                      f"Mandatory item {m['rule_id']} (rule not loaded in v0.1)",
                      "PM confirms the mandatory finding is addressed per spec", cls, findings=[finding]))
 
-    # 3. core template
+    # 3. core template (class / hard stop / approver come from the template; defaults = Standard, none)
     g1_11 = lib.settings.get("g1_11_class", "Standard")
     for c in lib.core:
-        cls = g1_11 if c["id"] == "G1-11" else "Standard"
+        cls = raise_only(c["class"], g1_11) if c["id"] == "G1-11" else c["class"]
         owner, fb = res.email(c["owner_role"])
-        put(Item(pc, "G1", c["id"], "Core template", c["item"], c["criterion"], cls,
-                 owner_email=owner, approver_role=f"Owner: {c['owner_role']}", role_fallback=fb))
+        put(Item(pc, c["gate"], c["id"], "Core template", c["item"], c["criterion"], cls,
+                 hard_stop=c["hard_stop"] and cls == "Critical",
+                 owner_email=owner, approver_role=f"Owner: {c['owner_role']}", role_fallback=fb,
+                 approver_roles=[c["approver_role"]] if c["approver_role"] else [],
+                 checkpoint=c["checkpoint"]))
 
-    # 4. owners and approvers
+    # 4. owners and approvers: one path for every non-Standard item, whatever its source
     for it in bucket.values():
         if it.source == "Core template" and it.item_class == "Standard":
             continue
         it.owner_email = it.owner_email or res.email("BD POC")[0]
         if it.item_class == "Critical":
             rule = lib.rules.get(it.item_id)
-            roles = (rule or {}).get("approver_roles") or ["Founders"]
-            if it.item_id == "G1-11":
+            roles = it.approver_roles or (rule or {}).get("approver_roles") or ["Founders"]
+            if it.item_id == "G1-11" and not it.approver_roles:
                 roles = ["Founder"]
             it.approver_role = " + ".join(roles)
             it.approver_email, it.role_fallback = res.email(roles[0])
         elif it.item_class == "Note":
-            it.approver_role = "Receiving POC"
-            it.approver_email, it.role_fallback = res.receiver(it.gate)
+            if it.approver_roles and it.approver_roles != [RECEIVING_POC]:
+                it.approver_role = " + ".join(it.approver_roles)
+                it.approver_email, it.role_fallback = res.email(it.approver_roles[0])
+            else:
+                it.approver_role = RECEIVING_POC
+                it.approver_email, it.role_fallback = res.receiver(it.gate)
 
     items = sorted(bucket.values(), key=lambda i: (i.gate, i.source != "Core template", i.item_id))
     return items, log

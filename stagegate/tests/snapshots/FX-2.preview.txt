@@ -1,0 +1,22 @@
+GATE ITEM       CLASS    HS SRC        APPROVER/ACK
+G1   G1-01      Standard -  core       
+G1   G1-02      Standard -  core       
+G1   G1-03      Standard -  core       
+G1   G1-04      Standard -  core       
+G1   G1-05      Standard -  core       
+G1   G1-06      Standard -  core       
+G1   G1-07      Standard -  core       
+G1   G1-08      Standard -  core       
+G1   G1-09      Standard -  core       
+G1   G1-10      Standard -  core       
+G1   G1-11      Standard -  core       
+G1   G1-12      Standard -  core       
+G1   G1-13      Standard -  core       
+G1   DF-G1      Critical -  kickoff    aqeedat.kaur.sandhu@covvalent.com  [fallback]
+G1   DF-L2      Critical -  kickoff    aqeedat.kaur.sandhu@covvalent.com
+G1   DF-L7      Note     -  mandatory  devendar.vanga@covvalent.com
+G1   DF-R2      Critical -  kickoff    aqeedat.kaur.sandhu@covvalent.com
+G1   KO-E512A7  Note     -  UNMAPPED   devendar.vanga@covvalent.com
+G2   DF-R6      Critical -  kickoff    aqeedat.kaur.sandhu@covvalent.com
+
+import log: {"run_id": "FX-2-run1", "rows_read": 5, "rows_imported": 5, "rows_skipped_low_score": 0, "rows_unmapped": 1, "rows_deferred_rule": 1, "mandatory_read": 1}
