@@ -1,7 +1,8 @@
 # Engine settings for MVP v0.1.
 # role_fields maps a role named in templates/rules to the Project Master field holding that person's email.
-# Roles with no field yet (Regulatory head, Analytical lead, Costing owner, PM) fall back as listed;
-# fallbacks are flagged in the item so nobody mistakes them for the real role holder.
+# Roles with no field yet (Regulatory head, Costing owner, Costing, PM) fall back as listed;
+# role_routing roles use their own field when set, else fall back. Fallbacks are flagged in the item
+# so nobody mistakes them for the real role holder.
 version: 1
 role_fields:
   BD POC: bd_poc_email
@@ -12,15 +13,22 @@ role_fields:
   R&D lead: rd_lead_email
 role_fallbacks:
   PM: bd_poc_email
-  Analytical lead: rd_lead_email
   Costing owner: bd_poc_email
   Regulatory head: founder_approver_email
-  # G2 placeholders (fallback): no Project Master field yet; V2-03 replaces these.
-  Sponsor: founder_approver_email       # (fallback)
-  Project Lead: bd_poc_email            # (fallback)
-  Procurement: bd_poc_email             # (fallback)
-  Chemist: rd_lead_email                # (fallback)
-  Costing: bd_poc_email                 # (fallback)
+  Costing: bd_poc_email                 # (fallback) G2 placeholder, no Projects field yet
+# Named charter roles (V2-03): role -> Projects-app field -> fallback field.
+# The fallback is used only when the field is missing or empty, and is flagged "(fallback)".
+# These fields are read from the fixture's project block for routing ONLY and are never sent to
+# Clappia (they don't exist in the Projects app yet). multi: the field is a comma-separated list;
+# its first address is used.
+role_routing:
+  Sponsor:            {field: sponsor_email,         fallback: founder_approver_email}
+  Project Lead:       {field: project_lead_email,    fallback: bd_poc_email}
+  Chemist:            {field: rd_chemists,           fallback: rd_lead_email, multi: true}
+  Analytical lead:    {field: analytical_lead_email, fallback: rd_lead_email}
+  Procurement:        {field: procurement_email,     fallback: bd_poc_email}
+  Process engineer:   {field: process_lead_email,    fallback: rd_lead_email}
+  Pilot coordination: {field: pilot_lead_email,      fallback: founder_approver_email}
 # Receiving POC per gate: acknowledges Notes and e-signs ownership.
 receiving_poc_field:
   G1: rd_lead_email
@@ -29,6 +37,11 @@ g1_11_class: Standard
 # Core templates (data/*_core.yaml) that inject and status use. Others are loaded and validated only.
 # G2 is added in V2-11; until then existing projects get no G2 core records.
 active_core_gates: [G1]
+# Pilot guard (V2-03). When enforced, inject (live and --dry-run) and status refuse to run, before
+# any API call, if an email they would write is not listed here: Projects record fields, every
+# Gate Item's owner_email / approver_email, and the Decision record's receiving_poc_email.
+pilot_allowlist: [aqeedat.kaur.sandhu@covvalent.com, sales.crams@covvalent.com, devendar.vanga@covvalent.com]
+enforce_pilot_allowlist: true
 # Clappia Select/Dropdown fields per app. The API wants these as a list of strings on write
 # ("G1" -> ["G1"]) and returns them as lists on read. Everything else (e.g. target_market) is plain text.
 select_fields:

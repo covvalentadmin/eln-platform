@@ -15,7 +15,8 @@ from typing import Callable, Optional
 
 from stagegate.clappia import (DEFAULT_DOTENV, ClappiaClient, ClappiaError, Config, fv, load_dotenv,
                                norm_value)
-from stagegate.engine import build_checklist, load_library
+from stagegate.engine import build_checklist, load_library, routing_fields
+from stagegate.pilot import planned_violations, refuse
 
 TEST_PREFIX = "FX-"
 GATE = "G1"
@@ -39,6 +40,13 @@ class Summary:
         keys = ["would create", "would upsert"] if dry_run else ["created", "updated", "skipped", "error"]
         totals = ", ".join(f"{k}={self.count(k)}" for k in keys)
         print(f"\nsummary{' (DRY RUN, no API calls made)' if dry_run else ''}: {totals}", file=out)
+
+
+def clappia_project_fields(project: dict, settings: dict) -> dict:
+    """The fixture project block minus role-routing-only fields (sponsor_email, rd_chemists, ...):
+    those are read for routing and never sent to Clappia."""
+    skip = routing_fields(settings)
+    return {k: v for k, v in project.items() if k not in skip}
 
 
 def gate_decision_record(project: dict) -> dict:
@@ -110,13 +118,19 @@ def run_inject(fixture: str, dry_run: bool = False, allow_live: bool = False,
     sel = lib.settings.get("select_fields") or {}
     sel_pm, sel_gi, sel_gd = (sel.get(k) for k in ("project_master", "gate_items", "gate_decision"))
     decision = gate_decision_record(project)
+    project_out = clappia_project_fields(project, lib.settings)
+    # Pilot guard: before any output, dry run or API call. No partial writes.
+    violations = planned_violations(pc, project_out, items, decision, GATE, lib.settings)
+    if violations:
+        refuse("inject", violations, out)
+        return EXIT_REFUSED
     summ = Summary()
     print(f"inject {pc}: {len(items)} checklist items, import log {json.dumps(log)}", file=out)
     print(f"apps: project_master={cfg.app_project_master} gate_items={cfg.app_gate_items} "
           f"gate_decision={cfg.app_gate_decision} workplace={cfg.workplace_id}\n", file=out)
 
     if dry_run:
-        summ.add("would upsert", f"Project Master {pc}", f"{len(project)} fields, match on project_code")
+        summ.add("would upsert", f"Project Master {pc}", f"{len(project_out)} fields, match on project_code")
         for it in items:
             summ.add("would create", f"Gate Item {it.idempotency_key}", f"{it.item_class}"
                      + (", HARD STOP" if it.hard_stop else ""))
@@ -136,7 +150,7 @@ def run_inject(fixture: str, dry_run: bool = False, allow_live: bool = False,
         found = client.get_submissions(cfg.app_project_master, {"project_code": pc})
         if len(found) > 1:
             raise ClappiaError(f"{len(found)} Project Master records for {pc}; fix duplicates by hand")
-        pm_payload = to_payload(project, sel_pm)
+        pm_payload = to_payload(project_out, sel_pm)
         if not found:
             sid = client.create_submission(cfg.app_project_master, pm_payload)
             summ.add("created", f"Project Master {pc}", sid)

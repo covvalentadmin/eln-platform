@@ -1,4 +1,4 @@
-"""status tests. Same FakeClappia + network block as test_inject; no real HTTP."""
+"""status tests. Same FakeClappia as test_inject; real HTTP is blocked by conftest.py."""
 import io
 import json
 from datetime import datetime, timezone
@@ -9,7 +9,7 @@ from stagegate.clappia import ClappiaClient
 from stagegate.engine import build_checklist, load_library
 from stagegate.inject import EXIT_ERRORS, EXIT_OK, EXIT_REFUSED, gate_decision_record
 from stagegate.status import AWAITING, run_status
-from test_inject import ENV, FX, FakeClappia, no_network  # noqa: F401  (no_network: autouse fixture)
+from test_inject import ENV, FX, FakeClappia
 
 T1 = datetime(2026, 11, 16, 9, 0, 0, tzinfo=timezone.utc)
 T2 = datetime(2026, 11, 16, 10, 30, 0, tzinfo=timezone.utc)

@@ -9,6 +9,9 @@ Writes only fields that changed; the timestamp fields are added only alongside a
 
 --dry-run makes NO network calls: it evaluates the fixture's checklist as freshly injected
 (every item open, no decision yet) and shows what would be written.
+
+Pilot guard (settings enforce_pilot_allowlist): with a fixture, the fixture's emails are checked
+before any API call; with --project, the emails in the records read are checked before any write.
 """
 from __future__ import annotations
 
@@ -20,8 +23,9 @@ from typing import Callable, Optional
 
 from stagegate.clappia import DEFAULT_DOTENV, ClappiaClient, ClappiaError, Config, fv, norm_value
 from stagegate.engine import build_checklist, load_library
-from stagegate.inject import (EXIT_ERRORS, EXIT_OK, EXIT_REFUSED, GATE, _changed, guard_enabled,
-                              guard_project, load_config, to_payload)
+from stagegate.inject import (EXIT_ERRORS, EXIT_OK, EXIT_REFUSED, GATE, _changed, clappia_project_fields,
+                              gate_decision_record, guard_enabled, guard_project, load_config, to_payload)
+from stagegate.pilot import planned_violations, record_violations, refuse
 from stagegate.readiness import evaluate
 
 AWAITING = "Ready - awaiting Pass + ownership"
@@ -76,8 +80,19 @@ def run_status(fixture: Optional[str] = None, project: Optional[str] = None, dry
     if not guard_project(pc, allow_live, out):
         return EXIT_REFUSED
 
-    sel = load_library().settings.get("select_fields") or {}
+    lib = load_library()
+    sel = lib.settings.get("select_fields") or {}
     sel_pm, sel_gd = sel.get("project_master"), sel.get("gate_decision")
+
+    # Pilot guard, fixture mode: the same check as inject, before any API call (live or dry run).
+    fixture_items = None
+    if data is not None:
+        fixture_items, _ = build_checklist(data["project"], data["sidecar"], lib)
+        violations = planned_violations(pc, clappia_project_fields(data["project"], lib.settings), fixture_items,
+                                        gate_decision_record(data["project"]), GATE, lib.settings)
+        if violations:
+            refuse("status", violations, out)
+            return EXIT_REFUSED
 
     def pm_fields(light, ev):
         return to_payload({"traffic_light": light, "open_critical": ev["open_critical"],
@@ -91,8 +106,7 @@ def run_status(fixture: Optional[str] = None, project: Optional[str] = None, dry
             print("--dry-run makes no API calls, so it needs a fixture to simulate; "
                   "--project needs a live read.", file=out)
             return EXIT_REFUSED
-        items, _ = build_checklist(data["project"], data["sidecar"], load_library())
-        records = [{k: norm_value(v) for k, v in it.to_clappia().items()} for it in items]
+        records = [{k: norm_value(v) for k, v in it.to_clappia().items()} for it in fixture_items]
         ev = evaluate(records, GATE)
         light, blockers = final_light(ev, {})
         ts = utc_stamp(now())
@@ -121,6 +135,13 @@ def run_status(fixture: Optional[str] = None, project: Optional[str] = None, dry
     if not records:
         print(f"status {pc}: no Gate Items found; run inject first. Nothing written.", file=out)
         return EXIT_ERRORS
+    if data is None:
+        # Pilot guard, --project mode: no local data, so check what was read, before any write.
+        violations = record_violations(pc, [fv(s) for s in pms], records, [fv(s) for s in decisions],
+                                       GATE, lib.settings)
+        if violations:
+            refuse("status", violations, out, nothing="Nothing written")
+            return EXIT_REFUSED
 
     decision = {}
     if len(decisions) == 1:

@@ -1,4 +1,5 @@
-"""inject + Clappia client tests. HTTP is faked at the transport layer; real sockets are blocked."""
+"""inject + Clappia client tests. HTTP is faked at the transport layer; real HTTP is blocked by the
+autouse no_network fixture in conftest.py."""
 import io
 import json
 import urllib.error
@@ -19,13 +20,6 @@ KEY = "sk-test-SECRET-123"
 ENV = {"SG_ENABLED": "true", "CLAPPIA_API_KEY": KEY, "CLAPPIA_USER_EMAIL": "bot@example.com",
        "CLAPPIA_WORKPLACE_ID": "WP1", "SG_APP_PROJECT_MASTER": "PM", "SG_APP_GATE_ITEMS": "GI",
        "SG_APP_GATE_DECISION": "GD", "CLAPPIA_BASE_URL": "https://fake.test"}
-
-
-@pytest.fixture(autouse=True)
-def no_network(monkeypatch):
-    def boom(*a, **k):
-        raise AssertionError("real network call attempted in tests")
-    monkeypatch.setattr(urllib.request, "urlopen", boom)
 
 
 def wrap(app, data):

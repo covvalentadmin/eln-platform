@@ -76,12 +76,15 @@ def test_check_and_evidence_text():
 
 
 # ---------------------------------------------------------------- roles
-def test_placeholder_roles_are_fallbacks_and_rd_lead_is_real():
+def test_charter_roles_routed_and_rd_lead_is_real():
     s = LIB.settings
-    assert s["role_fallbacks"]["Sponsor"] == "founder_approver_email"
-    assert s["role_fallbacks"]["Project Lead"] == "bd_poc_email"
-    assert s["role_fallbacks"]["Procurement"] == "bd_poc_email"
-    assert s["role_fallbacks"]["Chemist"] == "rd_lead_email"
+    r = s["role_routing"]  # V2-03 replaced the V2-02 placeholders with field -> fallback routing
+    assert r["Sponsor"] == {"field": "sponsor_email", "fallback": "founder_approver_email"}
+    assert r["Project Lead"] == {"field": "project_lead_email", "fallback": "bd_poc_email"}
+    assert r["Procurement"] == {"field": "procurement_email", "fallback": "bd_poc_email"}
+    assert r["Chemist"] == {"field": "rd_chemists", "fallback": "rd_lead_email", "multi": True}
+    for role in ("Sponsor", "Project Lead", "Procurement", "Chemist"):
+        assert role not in s["role_fallbacks"]
     assert s["role_fallbacks"]["Costing"] == "bd_poc_email"
     assert s["role_fields"]["R&D lead"] == "rd_lead_email"
 

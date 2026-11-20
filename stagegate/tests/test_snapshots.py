@@ -42,6 +42,32 @@ CASES = [(n, kind, fn) for n in FIXTURES
          for kind, fn in (("preview", preview_output), ("inject-dry-run", inject_dry_run_output))]
 
 
+def clappia_payloads(name: str) -> dict:
+    """Exactly what inject would send for a fixture: Projects record, every Gate Item, the Decision."""
+    import json
+    from stagegate.engine import build_checklist, load_library
+    from stagegate.inject import clappia_project_fields, gate_decision_record, to_payload
+    lib = load_library()
+    sel = lib.settings["select_fields"]
+    d = json.loads((ROOT / "fixtures" / f"{name}.json").read_text(encoding="utf-8"))
+    items, _ = build_checklist(d["project"], d["sidecar"], lib)
+    return {"project": to_payload(clappia_project_fields(d["project"], lib.settings), sel["project_master"]),
+            "items": [to_payload(i.to_clappia(), sel["gate_items"]) for i in items],
+            "decision": to_payload(gate_decision_record(d["project"]), sel["gate_decision"])}
+
+
+@pytest.mark.parametrize("name", FIXTURES)
+def test_clappia_payloads_unchanged(name):
+    """Everything inject would send for FX-n (Projects record, every Gate Item incl. the "Owner: <role>
+    (fallback: role holder not set)" labels, the Decision), pinned by SHA-256 of its canonical JSON as
+    captured before V2-03. To inspect a mismatch, dump clappia_payloads(name) and compare by hand."""
+    import hashlib
+    import json
+    want = json.loads((SNAP / "FX-payloads.sha256.json").read_text(encoding="utf-8"))[name]
+    canon = json.dumps(clappia_payloads(name), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    assert hashlib.sha256(canon.encode("utf-8")).hexdigest() == want, f"{name} Clappia payloads changed"
+
+
 @pytest.mark.parametrize("name,kind,fn", CASES, ids=[f"{n}-{k}" for n, k, _ in CASES])
 def test_snapshot(name, kind, fn):
     path = SNAP / f"{name}.{kind}.txt"

@@ -50,13 +50,24 @@ class Library:
     cores: dict = field(default_factory=dict)  # every loaded core template: gate -> items (active or not)
 
 
+def known_roles(settings: dict) -> set:
+    """Every role name a template or rule may use."""
+    return (set(settings.get("role_fields") or {}) | set(settings.get("role_fallbacks") or {})
+            | set(settings.get("role_routing") or {}))
+
+
+def routing_fields(settings: dict) -> set:
+    """Projects fields read for role routing only (role_routing). Never sent to Clappia."""
+    return {r["field"] for r in (settings.get("role_routing") or {}).values()}
+
+
 def load_core_template(path: Path, settings: dict) -> list:
     """Load and validate one gate's core template. Returns items with every optional key filled
     in and the file's `gate` attached. Raises TemplateError naming the file, item and key."""
     path = Path(path)
     with open(path, encoding="utf-8") as fh:
         doc = yaml.safe_load(fh) or {}
-    roles = set(settings.get("role_fields") or {}) | set(settings.get("role_fallbacks") or {})
+    roles = known_roles(settings)
     errs, out, seen = [], [], set()
 
     def err(item_id, key, msg):
@@ -169,6 +180,8 @@ class Item:
     # Internal only, never sent to Clappia (not in to_clappia()):
     approver_roles: list = field(default_factory=list)  # core-template approver; flag rules use the rule's
     checkpoint: str = "gate"
+    owner_fallback: bool = False  # owner_email is a fallback; role_fallback stays the approver's flag
+                                  # (for Standard core items it still marks the "Owner: <role>" label)
 
     @property
     def idempotency_key(self) -> str:
@@ -247,6 +260,16 @@ class _Resolver:
         self.p, self.s = project, settings
 
     def email(self, role: str) -> tuple:
+        """(email, is_fallback). role_routing: own field if set, else its fallback field."""
+        r = (self.s.get("role_routing") or {}).get(role)
+        if r:
+            v = self.p.get(r["field"])
+            v = v.strip() if isinstance(v, str) else ""
+            if r.get("multi"):
+                v = next((a.strip() for a in v.split(",") if a.strip()), "")
+            if v:
+                return v, False
+            return self.p.get(r["fallback"], ""), True
         f = self.s["role_fields"].get(role)
         if f and self.p.get(f):
             return self.p[f], False
@@ -347,13 +370,14 @@ def build_checklist(project: dict, sidecar: dict, lib: Library) -> tuple:
                  hard_stop=c["hard_stop"] and cls == "Critical",
                  owner_email=owner, approver_role=f"Owner: {c['owner_role']}", role_fallback=fb,
                  approver_roles=[c["approver_role"]] if c["approver_role"] else [],
-                 checkpoint=c["checkpoint"]))
+                 checkpoint=c["checkpoint"], owner_fallback=fb))
 
     # 4. owners and approvers: one path for every non-Standard item, whatever its source
     for it in bucket.values():
         if it.source == "Core template" and it.item_class == "Standard":
             continue
-        it.owner_email = it.owner_email or res.email("BD POC")[0]
+        if not it.owner_email:
+            it.owner_email, it.owner_fallback = res.email("BD POC")
         if it.item_class == "Critical":
             rule = lib.rules.get(it.item_id)
             roles = it.approver_roles or (rule or {}).get("approver_roles") or ["Founders"]

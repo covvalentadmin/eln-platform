@@ -19,13 +19,17 @@ def preview_core_gate(path: str, gate: str) -> int:
     items = [i for i in items if i.source == "Core template" and i.gate == gate]
     order = {c["id"]: n for n, c in enumerate(lib.cores[gate])}
     items.sort(key=lambda i: order[i.item_id])  # template order
-    print(f"{'GATE':4} {'ITEM':7} {'CLASS':8} {'HS':2} {'CHECKPOINT':14} {'OWNER':34} APPROVER/ACK")
+    rows = []
     for i in items:
-        std = i.item_class == "Standard"
-        owner = i.owner_email + (" [fallback]" if std and i.role_fallback else "")
-        who = "" if std else i.approver_email + (" [fallback]" if i.role_fallback else "")
+        owner = i.owner_email + (" [fallback]" if i.owner_fallback else "")  # owner flag, every class
+        who = "" if i.item_class == "Standard" else \
+            i.approver_email + (" [fallback]" if i.role_fallback else "")    # approver flag
+        rows.append((i, owner, who))
+    ow = max([len("OWNER")] + [len(o) for _, o, _ in rows]) + 1  # column always wider than its longest value
+    print(f"{'GATE':4} {'ITEM':7} {'CLASS':8} {'HS':2} {'CHECKPOINT':14} {'OWNER':{ow}} APPROVER/ACK")
+    for i, owner, who in rows:
         print(f"{i.gate:4} {i.item_id:7} {i.item_class:8} {'Y' if i.hard_stop else '-':2} {i.checkpoint:14} "
-              f"{owner:34} {who}".rstrip())
+              f"{owner:{ow}} {who}".rstrip())
     active = lib.settings.get("active_core_gates", ["G1"])
     print(f"\n{gate} core template: {len(items)} items; "
           f"{'ACTIVE' if gate in active else 'not active'} (active_core_gates: {', '.join(active)})")
