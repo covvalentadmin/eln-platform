@@ -183,11 +183,14 @@ def test_core_items_count_like_flag_items(tmp_path):
     assert (ev["open_critical"], ev["open_standard"], ev["unacked_notes"]) == (1, 1, 1)
 
 
-def test_checkpoint_and_internal_roles_never_sent(tmp_path):
+def test_checkpoint_sent_as_label_internal_roles_never_sent(tmp_path):
+    """V2-15: checkpoint is sent as its "Must close before" label; approver_roles stays internal."""
     items = build(tmp_path, INLINE, rows=[{"stage": "R&D", "risk": "x", "score": 4, "confidence": "High",
                                            "learning_id": "R-004"}])
     flag_keys = set(items["DF-R5"].to_clappia())
-    for iid in ("T-01", "T-02", "T-03"):
+    assert items["DF-R5"].to_clappia()["checkpoint"] == "Before gate decision"  # flag rules: default "gate"
+    labels = {"T-01": "Before first experiment", "T-02": "Before sample CoA", "T-03": "Before gate decision"}
+    for iid, label in labels.items():
         payload = items[iid].to_clappia()
-        assert "checkpoint" not in payload and "approver_roles" not in payload
-        assert set(payload) <= flag_keys  # no new Clappia key
+        assert payload["checkpoint"] == label and "approver_roles" not in payload
+        assert set(payload) <= flag_keys  # same keys as flag-rule items

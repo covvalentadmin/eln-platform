@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from stagegate.clappia import (DEFAULT_DOTENV, ClappiaClient, ClappiaError, Config, fv, load_dotenv,
-                               norm_value)
+                               same_value)
 from stagegate.engine import build_checklist, load_library, routing_fields
 from stagegate.pilot import planned_violations, refuse
 
@@ -66,8 +66,9 @@ def gate_decision_record(project: dict) -> dict:
 
 
 def _changed(existing: dict, wanted: dict) -> dict:
-    """Fields of `wanted` that differ from `existing` (already normalised via fv())."""
-    return {k: v for k, v in wanted.items() if existing.get(k, "") != norm_value(v)}
+    """Fields of `wanted` (payload form) that differ from `existing` (raw or fv()-normalised Clappia
+    values). Multi-select lists compare order-insensitively (clappia.same_value)."""
+    return {k: v for k, v in wanted.items() if not same_value(existing.get(k), v)}
 
 
 def to_payload(data: dict, select_fields) -> dict:
@@ -174,8 +175,9 @@ def run_inject(fixture: str, dry_run: bool = False, allow_live: bool = False,
             summ.add("created", f"Project Master {pc}", sid)
         else:
             sid = found[0].get("submissionId", "")
-            # Compared in payload form, so values the fixture leaves empty are never reported.
-            kept = list(_changed(fv(found[0]), pm_payload))
+            # Compared in payload form, so values the fixture leaves empty are never reported; against the
+            # raw record, so a multi-select with the same options in another order is not a difference.
+            kept = list(_changed(found[0].get("submissionFieldValues") or {}, pm_payload))
             summ.add("skipped", f"Project Master {pc}",
                      f"{sid} unchanged" if not kept else f"{sid} exists; Clappia values kept, nothing sent")
             for f in kept:

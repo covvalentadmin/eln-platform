@@ -22,8 +22,13 @@ LIB = load_library()
 FX1 = json.loads((ROOT / "fixtures" / "FX-1.json").read_text(encoding="utf-8"))
 PEOPLE = ["project_code", "product", "cas_number", "specification", "volume", "timeline", "target_price_usd_kg",
           "end_use", "target_market", "destination", "incoterms", "transit_temperature",
-          "bd_poc_email", "rd_lead_email", "founder_approver_email", "csio_approver_email"]
-SYSTEM = ["traffic_light", "open_critical", "open_standard", "unacked_notes", "last_engine_run", "current_stage"]
+          "bd_poc_email", "rd_lead_email", "founder_approver_email", "csio_approver_email"]  # the 16 FX fields
+CHARTER = ["customer", "formula_mw", "stages_in_scope", "baseline_route", "sponsor_email", "project_lead_email",
+           "objectives", "out_of_scope", "gmp_status", "regulatory_note", "spec_document_link", "method_status",
+           "assumptions", "target_rmc_usd_kg", "deliverables", "stage_timeline", "analytical_lead_email",
+           "process_lead_email", "procurement_email", "pilot_lead_email"]  # V2-15
+SYSTEM = ["traffic_light", "open_critical", "open_standard", "unacked_notes", "last_engine_run", "current_stage",
+          "checkpoint_status"]
 
 
 def fixture_file(tmp_path, **changes):
@@ -52,8 +57,9 @@ def kept_lines(out):
 # ---------------------------------------------------------------- settings
 def test_field_lists_in_settings():
     s = LIB.settings
-    assert s["people_fields"] == PEOPLE and s["system_fields"] == SYSTEM
-    for name in ("FX-1", "FX-2", "FX-3", "FX-4"):  # people_fields = every field inject sends today
+    assert s["people_fields"] == PEOPLE + CHARTER + ["rd_chemists"] and s["system_fields"] == SYSTEM
+    assert len(CHARTER) == 20
+    for name in ("FX-1", "FX-2", "FX-3", "FX-4"):  # the FX fixtures still carry exactly the 16 V2-04 fields
         d = json.loads((ROOT / "fixtures" / f"{name}.json").read_text(encoding="utf-8"))
         assert list(d["project"]) == PEOPLE, name
 
@@ -69,15 +75,23 @@ def copy_data(tmp_path, edit):
 
 
 def test_field_in_both_lists_fails_to_load(tmp_path):
-    d = copy_data(tmp_path, lambda s: s.replace("last_engine_run, current_stage]", "last_engine_run, current_stage, volume]"))
+    d = copy_data(tmp_path, lambda s: s.replace("checkpoint_status]", "checkpoint_status, volume]"))
     with pytest.raises(SettingsError, match=r"both people_fields and system_fields: \['volume'\]"):
         load_library(d)
 
 
-def test_routing_field_in_a_list_fails_to_load(tmp_path):
-    d = copy_data(tmp_path, lambda s: s.replace("csio_approver_email]", "csio_approver_email, sponsor_email]"))
-    with pytest.raises(SettingsError, match=r"role_routing fields must not be in .*sponsor_email"):
+def test_routing_field_in_system_fields_fails_to_load(tmp_path):
+    d = copy_data(tmp_path, lambda s: s.replace("checkpoint_status]", "checkpoint_status, process_lead_email]")
+                  .replace("process_lead_email, procurement_email", "procurement_email"))  # out of people_fields
+    with pytest.raises(SettingsError, match=r"role_routing fields must not be in system_fields: \['process_lead_email'\]"):
         load_library(d)
+
+
+def test_routing_field_in_people_fields_loads():
+    """V2-15: the routed role fields are real Projects fields, so they are people_fields."""
+    routed = {r["field"] for r in LIB.settings["role_routing"].values()}
+    assert routed <= set(LIB.settings["people_fields"])
+    assert not routed & set(LIB.settings["system_fields"])
 
 
 def test_missing_list_fails_to_load(tmp_path):

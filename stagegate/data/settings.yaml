@@ -18,9 +18,9 @@ role_fallbacks:
   Costing: bd_poc_email                 # (fallback) G2 placeholder, no Projects field yet
 # Named charter roles (V2-03): role -> Projects-app field -> fallback field.
 # The fallback is used only when the field is missing or empty, and is flagged "(fallback)".
-# These fields are read from the fixture's project block for routing ONLY and are never sent to
-# Clappia (they don't exist in the Projects app yet). multi: the field is a comma-separated list;
-# its first address is used.
+# Since V2-15 these are real Projects fields (charter section / rd_chemists in "Team and links"): they
+# are also people_fields, so inject sends them when it creates the record. They may never be
+# system_fields. multi: the field is a comma-separated list; its first address is used.
 role_routing:
   Sponsor:            {field: sponsor_email,         fallback: founder_approver_email}
   Project Lead:       {field: project_lead_email,    fallback: bd_poc_email}
@@ -42,17 +42,29 @@ active_core_gates: [G1]
 # Gate Item's owner_email / approver_email, and the Decision record's receiving_poc_email.
 pilot_allowlist: [aqeedat.kaur.sandhu@covvalent.com, sales.crams@covvalent.com, devendar.vanga@covvalent.com]
 enforce_pilot_allowlist: true
-# Projects-app fields (V2-04). Validated on load: no field in both lists, no role_routing field in either.
+# Projects-app fields (V2-04, extended V2-15). Validated on load: no field in both lists, no role_routing
+# field in system_fields (a role_routing field may be a people_field).
 # people_fields: what people type in the Projects app. inject sends them only when it CREATES the record;
 #   once the record exists it sends none of them, so nothing people typed is ever overwritten.
 # system_fields: written only by status (and never by inject).
 people_fields: [project_code, product, cas_number, specification, volume, timeline, target_price_usd_kg,
                 end_use, target_market, destination, incoterms, transit_temperature,
-                bd_poc_email, rd_lead_email, founder_approver_email, csio_approver_email]
-system_fields: [traffic_light, open_critical, open_standard, unacked_notes, last_engine_run, current_stage]
+                bd_poc_email, rd_lead_email, founder_approver_email, csio_approver_email,
+                # V2-15: section "Project charter" (all optional)
+                customer, formula_mw, stages_in_scope, baseline_route, sponsor_email, project_lead_email,
+                objectives, out_of_scope, gmp_status, regulatory_note, spec_document_link, method_status,
+                assumptions, target_rmc_usd_kg, deliverables, stage_timeline, analytical_lead_email,
+                process_lead_email, procurement_email, pilot_lead_email,
+                # V2-15: section "Team and links"
+                rd_chemists]
+# checkpoint_status (section "Gate status", read-only in the app) is written by status from V2-12.
+system_fields: [traffic_light, open_critical, open_standard, unacked_notes, last_engine_run, current_stage,
+                checkpoint_status]
 # Clappia Select/Dropdown fields per app. The API wants these as a list of strings on write
 # ("G1" -> ["G1"]) and returns them as lists on read. Everything else (e.g. target_market) is plain text.
 select_fields:
-  project_master: [end_use, incoterms, transit_temperature, current_stage, traffic_light]
-  gate_items: [gate, source, item_class, hard_stop, ticked, decision, note_category, ack_decision, superseded]
+  project_master: [end_use, incoterms, transit_temperature, current_stage, traffic_light,
+                   stages_in_scope, gmp_status, method_status]   # stages_in_scope is multi-select: send a list
+  gate_items: [gate, source, item_class, hard_stop, ticked, decision, note_category, ack_decision, superseded,
+               checkpoint]
   gate_decision: [gate, gate_ready, gate_decision, ownership_accepted]

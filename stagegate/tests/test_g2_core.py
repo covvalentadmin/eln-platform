@@ -118,12 +118,16 @@ def test_routing_labels_and_hard_stop():
     assert {i.checkpoint for i in items.values()} == {"pre_experiment", "gate", "pre_coa"}
 
 
-def test_checkpoint_not_sent_and_no_new_payload_keys():
+def test_checkpoint_label_sent_and_no_other_new_payload_keys():
+    """V2-15: G2 core items send their "Must close before" label; no other key beyond G1's."""
+    labels = {"pre_experiment": "Before first experiment", "pre_coa": "Before sample CoA",
+              "gate": "Before gate decision"}
     g1 = build_checklist(fixture("FX-2")["project"], fixture("FX-2")["sidecar"], LIB)[0]
     known = set().union(*(set(i.to_clappia()) for i in g1))
     for iid, i in g2_items().items():
         payload = i.to_clappia()
-        assert "checkpoint" not in payload and set(payload) <= known, iid
+        assert payload["checkpoint"] == labels[TABLE[iid][4]], iid
+        assert set(payload) <= known, iid
 
 
 # ---------------------------------------------------------------- not injected (active_core_gates)

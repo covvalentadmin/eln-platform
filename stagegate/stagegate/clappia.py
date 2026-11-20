@@ -168,6 +168,18 @@ def norm_value(value) -> str:
     return str(value)
 
 
+def same_value(stored, wanted) -> bool:
+    """Does a Clappia value equal a payload value? Lists (multi-select) compare as multisets, so the same
+    options in a different order are equal; a single value equals a one-item list; else norm_value()."""
+    def as_list(v):
+        if isinstance(v, list):
+            return sorted(str(x) for x in v)
+        return [] if v is None or v == "" else [str(v)]
+    if isinstance(stored, list) or isinstance(wanted, list):
+        return as_list(stored) == as_list(wanted)
+    return norm_value("" if stored is None else stored) == norm_value(wanted)
+
+
 def fv(submission: dict) -> dict:
     """Normalised field values of a getSubmissions record (every value is a str)."""
     return {k: norm_value(v) for k, v in (submission.get("submissionFieldValues") or {}).items()}

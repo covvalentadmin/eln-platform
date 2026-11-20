@@ -137,23 +137,24 @@ def write_fixture(tmp_path, name="FX-1", **project_changes):
     return p
 
 
-def test_routing_fields_not_sent_to_clappia(tmp_path):
+def test_routing_fields_sent_on_create(tmp_path):
+    """V2-15 (was: never sent). The routed role fields are real Projects fields now: sent on create."""
     path = write_fixture(tmp_path, **ROUTING_EXTRA)
     fake = FakeClappia()
     out = io.StringIO()
     code = run_inject(str(path), env=dict(ENV), out=out, client_factory=lambda cfg: ClappiaClient(cfg, transport=fake))
     assert code == EXIT_OK
     (pm,) = fake.creates("PM")
-    assert not set(ROUTING_EXTRA) & set(pm["data"]), "routing-only field sent"
-    sent_keys = set().union(*(set(c["data"]) for c in fake.creates()))
-    assert not set(ROUTING_EXTRA) & sent_keys
+    assert {k: pm["data"][k] for k in ROUTING_EXTRA} == ROUTING_EXTRA  # plain text, rd_chemists as typed
+    gi_keys = set().union(*(set(c["data"]) for c in fake.creates("GI")))
+    assert not set(ROUTING_EXTRA) & gi_keys  # only on the Projects record
 
 
-def test_dry_run_field_count_excludes_routing_fields(tmp_path):
+def test_dry_run_field_count_includes_routing_fields(tmp_path):
     out = io.StringIO()
     assert run_inject(str(write_fixture(tmp_path, **ROUTING_EXTRA)), dry_run=True,
                       env={"SG_ENABLED": "true"}, out=out) == EXIT_OK
-    assert "would upsert Project Master FX-1  -- 16 fields" in out.getvalue()
+    assert "would upsert Project Master FX-1  -- 19 fields" in out.getvalue()  # 16 + 3 routing fields
 
 
 # ---------------------------------------------------------------- pilot allowlist
@@ -206,11 +207,12 @@ def test_allowlist_is_case_insensitive(tmp_path):
     assert run_inject(str(path), dry_run=True, env=dict(ENV), out=out) == EXIT_OK
 
 
-def test_unwritten_routing_field_is_not_checked(tmp_path):
-    """sponsor_email is never sent, and no active (G1) item routes to Sponsor, so nothing writes it."""
+def test_routing_field_is_checked_now_that_it_is_written(tmp_path):
+    """V2-15 (was: sponsor_email unchecked because never sent). It is a Projects field sent on create now."""
     path = write_fixture(tmp_path, sponsor_email=OUTSIDER)
     out = io.StringIO()
-    assert run_inject(str(path), dry_run=True, env=dict(ENV), out=out) == EXIT_OK
+    assert run_inject(str(path), dry_run=True, env=dict(ENV), out=out, client_factory=no_client) == EXIT_REFUSED
+    assert f"Projects record FX-1: field 'sponsor_email': {OUTSIDER}" in out.getvalue()
 
 
 def test_status_project_mode_checks_reads_before_any_write():

@@ -4,7 +4,7 @@ import dataclasses
 import json
 import sys
 
-from stagegate.engine import build_checklist, load_library
+from stagegate.engine import SettingsError, TemplateError, build_checklist, load_library
 
 
 def preview_core_gate(path: str, gate: str) -> int:
@@ -67,17 +67,32 @@ def main(argv=None) -> int:
     st.add_argument("--dry-run", action="store_true", help="Simulate from the fixture; make no API calls at all")
     st.add_argument("--allow-live", action="store_true", help="Allow project codes that don't start with FX-")
     a = p.parse_args(argv)
-    if a.cmd == "status":
-        if bool(a.fixture) == bool(a.project):
-            st.error("give exactly one of: a fixture path, or --project")
-        from stagegate.status import run_status
-        return run_status(a.fixture, a.project, dry_run=a.dry_run, allow_live=a.allow_live)
-    if a.cmd == "inject":
-        from stagegate.inject import run_inject
-        return run_inject(a.fixture, dry_run=a.dry_run, allow_live=a.allow_live)
-    if a.core_gate:
-        return preview_core_gate(a.fixture, a.core_gate)
-    return preview(a.fixture)
+    if a.cmd == "status" and bool(a.fixture) == bool(a.project):
+        st.error("give exactly one of: a fixture path, or --project")
+    try:
+        if a.cmd == "status":
+            from stagegate.status import run_status
+            return run_status(a.fixture, a.project, dry_run=a.dry_run, allow_live=a.allow_live)
+        if a.cmd == "inject":
+            from stagegate.inject import run_inject
+            return run_inject(a.fixture, dry_run=a.dry_run, allow_live=a.allow_live)
+        if a.core_gate:
+            return preview_core_gate(a.fixture, a.core_gate)
+        return preview(a.fixture)
+    except SettingsError as ex:
+        print(f"settings error: {one_line(ex)}", file=sys.stderr)
+        return 2
+    except TemplateError as ex:
+        print(f"template error: {one_line(ex)}", file=sys.stderr)
+        return 2
+
+
+def one_line(ex: Exception) -> str:
+    """A multi-line error message as one line (every message kept, joined with '; ')."""
+    lines = [s.strip() for s in str(ex).splitlines() if s.strip()]
+    if len(lines) > 1 and lines[0].endswith(":"):
+        return lines[0] + " " + "; ".join(lines[1:])
+    return "; ".join(lines)
 
 
 if __name__ == "__main__":

@@ -6,12 +6,17 @@ Input: Gate Items records as dicts with Clappia field names
 Red   : any open hard stop (any gate), or any Critical at this gate undecided or rejected
 Amber : all Criticals decided; Standard items or Notes still open
 Ready : everything closed -> Pass selectable; Green only after receiver accepts ownership
+
+"Not applicable" (V2-15, from the Clappia item_status formula) closes a Standard item (ticked N/A) and a
+Critical item (decision N/A), hard stops included: the named approver signs that decision. Notes have
+no N/A. Closed items never appear in blockers.
 """
 from __future__ import annotations
 
+NOT_APPLICABLE = "Not applicable"
 CLOSED = {
-    "Standard": {"Done"},
-    "Critical": {"Approve", "Approve with conditions"},
+    "Standard": {"Done", NOT_APPLICABLE},
+    "Critical": {"Approve", "Approve with conditions", NOT_APPLICABLE},
     "Note": {"Taken into account"},
 }
 

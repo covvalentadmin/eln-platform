@@ -32,6 +32,9 @@ CORE_OPTIONAL = {"evidence": None, "class": "Standard", "hard_stop": False,
                  "approver_role": None, "checkpoint": "gate"}
 CORE_CLASSES = ("Standard", "Critical", "Note")
 CHECKPOINTS = ("pre_experiment", "pre_coa", "gate")
+# Clappia Checklist app dropdown "Must close before" (internal name: checkpoint), V2-15.
+CHECKPOINT_LABELS = {"pre_experiment": "Before first experiment", "pre_coa": "Before sample CoA",
+                     "gate": "Before gate decision"}
 RECEIVING_POC = "Receiving POC"  # Note-only approver_role: routes like flag-rule Notes
 
 
@@ -44,8 +47,8 @@ class SettingsError(ValueError):
 
 
 def validate_projects_fields(settings: dict) -> None:
-    """people_fields / system_fields (V2-04): both lists of names, disjoint, and neither may contain a
-    role_routing field (those are read for routing only and never sent)."""
+    """people_fields / system_fields (V2-04): both lists of names, disjoint. A role_routing field may be a
+    people_field (V2-15: they are real Projects fields) but never a system_field."""
     errs = []
     lists = {}
     for key in ("people_fields", "system_fields"):
@@ -60,9 +63,9 @@ def validate_projects_fields(settings: dict) -> None:
     both = sorted(lists["people_fields"] & lists["system_fields"])
     if both:
         errs.append(f"settings.yaml: fields in both people_fields and system_fields: {both}")
-    routed = sorted(routing_fields(settings) & (lists["people_fields"] | lists["system_fields"]))
+    routed = sorted(routing_fields(settings) & lists["system_fields"])
     if routed:
-        errs.append(f"settings.yaml: role_routing fields must not be in people_fields/system_fields: {routed}")
+        errs.append(f"settings.yaml: role_routing fields must not be in system_fields: {routed}")
     if errs:
         raise SettingsError("\n".join(errs))
 
@@ -85,7 +88,7 @@ def known_roles(settings: dict) -> set:
 
 
 def routing_fields(settings: dict) -> set:
-    """Projects fields read for role routing only (role_routing). Never sent to Clappia."""
+    """Projects fields that role_routing reads. Sent to Clappia only if also listed in people_fields."""
     return {r["field"] for r in (settings.get("role_routing") or {}).values()}
 
 
@@ -206,9 +209,9 @@ class Item:
     approver_role: str = ""
     approver_email: str = ""
     role_fallback: bool = False
+    checkpoint: str = "gate"  # sent as its CHECKPOINT_LABELS label ("Must close before", V2-15)
     # Internal only, never sent to Clappia (not in to_clappia()):
     approver_roles: list = field(default_factory=list)  # core-template approver; flag rules use the rule's
-    checkpoint: str = "gate"
     owner_fallback: bool = False  # owner_email is a fallback; role_fallback stays the approver's flag
                                   # (for Standard core items it still marks the "Owner: <role>" label)
 
@@ -233,6 +236,7 @@ class Item:
             "approver_email": self.approver_email,
             "idempotency_key": self.idempotency_key,
             "superseded": "No",
+            "checkpoint": CHECKPOINT_LABELS[self.checkpoint],
         }
         if self.kickoff_score is not None:
             d["kickoff_score"] = self.kickoff_score
