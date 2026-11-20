@@ -39,6 +39,34 @@ class TemplateError(ValueError):
     pass
 
 
+class SettingsError(ValueError):
+    pass
+
+
+def validate_projects_fields(settings: dict) -> None:
+    """people_fields / system_fields (V2-04): both lists of names, disjoint, and neither may contain a
+    role_routing field (those are read for routing only and never sent)."""
+    errs = []
+    lists = {}
+    for key in ("people_fields", "system_fields"):
+        v = settings.get(key)
+        if not isinstance(v, list) or not v or not all(isinstance(f, str) and f for f in v):
+            errs.append(f"settings.yaml: key '{key}': required non-empty list of field names")
+            v = []
+        dup = sorted({f for f in v if v.count(f) > 1})
+        if dup:
+            errs.append(f"settings.yaml: key '{key}': listed twice: {dup}")
+        lists[key] = set(v)
+    both = sorted(lists["people_fields"] & lists["system_fields"])
+    if both:
+        errs.append(f"settings.yaml: fields in both people_fields and system_fields: {both}")
+    routed = sorted(routing_fields(settings) & (lists["people_fields"] | lists["system_fields"]))
+    if routed:
+        errs.append(f"settings.yaml: role_routing fields must not be in people_fields/system_fields: {routed}")
+    if errs:
+        raise SettingsError("\n".join(errs))
+
+
 # ---------------------------------------------------------------- library
 @dataclass(frozen=True)
 class Library:
@@ -130,6 +158,7 @@ def load_library(data_dir: Path = DATA_DIR) -> Library:
             return yaml.safe_load(fh)
 
     settings = y("settings.yaml")
+    validate_projects_fields(settings)
     cores = load_core_templates(data_dir, settings)
     active = settings.get("active_core_gates", ["G1"])
     unknown = [g for g in active if g not in cores]

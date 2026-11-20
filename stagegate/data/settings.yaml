@@ -42,6 +42,14 @@ active_core_gates: [G1]
 # Gate Item's owner_email / approver_email, and the Decision record's receiving_poc_email.
 pilot_allowlist: [aqeedat.kaur.sandhu@covvalent.com, sales.crams@covvalent.com, devendar.vanga@covvalent.com]
 enforce_pilot_allowlist: true
+# Projects-app fields (V2-04). Validated on load: no field in both lists, no role_routing field in either.
+# people_fields: what people type in the Projects app. inject sends them only when it CREATES the record;
+#   once the record exists it sends none of them, so nothing people typed is ever overwritten.
+# system_fields: written only by status (and never by inject).
+people_fields: [project_code, product, cas_number, specification, volume, timeline, target_price_usd_kg,
+                end_use, target_market, destination, incoterms, transit_temperature,
+                bd_poc_email, rd_lead_email, founder_approver_email, csio_approver_email]
+system_fields: [traffic_light, open_critical, open_standard, unacked_notes, last_engine_run, current_stage]
 # Clappia Select/Dropdown fields per app. The API wants these as a list of strings on write
 # ("G1" -> ["G1"]) and returns them as lists on read. Everything else (e.g. target_market) is plain text.
 select_fields:

@@ -218,13 +218,15 @@ def test_rerun_with_list_valued_reads_creates_and_edits_nothing():
     assert f"skipped={len(items) + 2}" in out and "created=0" in out and "updated=0" in out
 
 
-def test_select_field_change_edits_as_list():
+def test_changed_select_field_is_kept_not_edited():
+    """V2-04: a Select value changed in Clappia (FOB) is kept; inject never edits the Projects record."""
     fake = FakeClappia()
     project, _ = expected_items()
-    sid = fake.seed("PM", {**project, "incoterms": "FOB"})
-    code, _ = run(fake)
-    assert code == EXIT_OK
-    assert [e["data"] for e in fake.edits()] == [{"incoterms": ["CIF"]}] and fake.edits()[0]["submissionId"] == sid
+    fake.seed("PM", {**project, "incoterms": "FOB"})
+    code, out = run(fake)
+    assert code == EXIT_OK and fake.edits() == []
+    assert fake.apps["PM"][0]["submissionFieldValues"]["incoterms"] == ["FOB"]
+    assert "  kept Clappia value: incoterms\n" in out and "kept=1" in out
 
 
 def test_existing_g1_decision_found_when_server_ignores_select_filters():
@@ -293,16 +295,16 @@ def test_only_missing_items_created():
     assert code == EXIT_OK and created == [i.idempotency_key for i in items[3:]]
 
 
-def test_project_master_upsert_edits_only_changed_fields():
+def test_existing_project_master_is_never_edited():
+    """V2-04 (was: edits only changed fields). Existing record: no create, no edit, difference reported."""
     fake = FakeClappia()
     project, _ = expected_items()
     sid = fake.seed("PM", {**project, "volume": "1 MT/yr"})
     code, out = run(fake)
-    edits = [b for p, b in fake.calls if p.endswith("/edit")]
-    assert code == EXIT_OK and not fake.creates("PM")
-    assert edits == [{"appId": "PM", "workplaceId": "WP1", "requestingUserEmailAddress": "bot@example.com",
-                      "submissionId": sid, "data": {"volume": project["volume"]}}]
-    assert "updated" in out
+    assert code == EXIT_OK and not fake.creates("PM") and fake.edits() == []
+    assert fake.apps["PM"][0]["submissionFieldValues"]["volume"] == "1 MT/yr"
+    assert f"skipped      Project Master FX-1  -- {sid} exists; Clappia values kept, nothing sent" in out
+    assert "  kept Clappia value: volume\n" in out and "updated=0" in out and "kept=1" in out
 
 
 def test_existing_decision_not_duplicated():

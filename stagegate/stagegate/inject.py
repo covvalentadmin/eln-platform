@@ -1,7 +1,8 @@
 """`stagegate inject`: push a fixture's G1 checklist into the SG-TEST Clappia apps.
 
-Order: Project Master upsert (match project_code) -> Gate Items (create only missing
-idempotency_keys) -> G1 Gate Decision (create if missing). Safe to re-run.
+Order: Project Master (match project_code; create if missing, NEVER edited once it exists: people own
+its people_fields, status owns its system_fields) -> Gate Items (create only missing idempotency_keys)
+-> G1 Gate Decision (create if missing). Safe to re-run.
 
 --dry-run makes NO network calls at all (not even reads): it shows what a run against
 empty apps would create. Live runs need SG_ENABLED=true, CLAPPIA_API_KEY and CLAPPIA_USER_EMAIL.
@@ -36,17 +37,27 @@ class Summary:
 
     def render(self, out, dry_run: bool):
         for s, t, d in self.rows:
+            if s == "kept":
+                print(f"  kept Clappia value: {t}", file=out)
+                continue
             print(f"  {s:12} {t}" + (f"  -- {d}" if d else ""), file=out)
-        keys = ["would create", "would upsert"] if dry_run else ["created", "updated", "skipped", "error"]
+        keys = ["would create", "would upsert"] if dry_run else ["created", "updated", "skipped", "error", "kept"]
         totals = ", ".join(f"{k}={self.count(k)}" for k in keys)
         print(f"\nsummary{' (DRY RUN, no API calls made)' if dry_run else ''}: {totals}", file=out)
 
 
 def clappia_project_fields(project: dict, settings: dict) -> dict:
-    """The fixture project block minus role-routing-only fields (sponsor_email, rd_chemists, ...):
-    those are read for routing and never sent to Clappia."""
-    skip = routing_fields(settings)
-    return {k: v for k, v in project.items() if k not in skip}
+    """The fixture project fields inject may send to the Projects app: people_fields only, in fixture
+    order. Routing-only fields (sponsor_email, rd_chemists, ...) and system_fields are never sent."""
+    people = set(settings.get("people_fields") or ())
+    return {k: v for k, v in project.items() if k in people}
+
+
+def unknown_project_fields(project: dict, settings: dict) -> list:
+    """Fixture project keys in none of people_fields, system_fields or role_routing."""
+    known = (set(settings.get("people_fields") or ()) | set(settings.get("system_fields") or ())
+             | routing_fields(settings))
+    return [k for k in project if k not in known]
 
 
 def gate_decision_record(project: dict) -> dict:
@@ -118,6 +129,11 @@ def run_inject(fixture: str, dry_run: bool = False, allow_live: bool = False,
     sel = lib.settings.get("select_fields") or {}
     sel_pm, sel_gi, sel_gd = (sel.get(k) for k in ("project_master", "gate_items", "gate_decision"))
     decision = gate_decision_record(project)
+    unknown = unknown_project_fields(project, lib.settings)
+    if unknown:
+        print(f"inject refused: fixture project field(s) {unknown} are not in settings.yaml people_fields, "
+              "system_fields or role_routing. Nothing sent.", file=out)
+        return EXIT_REFUSED
     project_out = clappia_project_fields(project, lib.settings)
     # Pilot guard: before any output, dry run or API call. No partial writes.
     violations = planned_violations(pc, project_out, items, decision, GATE, lib.settings)
@@ -145,7 +161,9 @@ def run_inject(fixture: str, dry_run: bool = False, allow_live: bool = False,
         return EXIT_REFUSED
     client = client_factory(cfg)
 
-    # 1. Project Master upsert. If we can't read it, stop: everything downstream keys off it.
+    # 1. Project Master. If we can't read it, stop: everything downstream keys off it.
+    #    Missing -> create with the fixture's people_fields. Existing -> NEVER edited: people own those
+    #    fields once the record exists, and system_fields belong to status. Differences are reported only.
     try:
         found = client.get_submissions(cfg.app_project_master, {"project_code": pc})
         if len(found) > 1:
@@ -156,13 +174,12 @@ def run_inject(fixture: str, dry_run: bool = False, allow_live: bool = False,
             summ.add("created", f"Project Master {pc}", sid)
         else:
             sid = found[0].get("submissionId", "")
-            # Diff in payload form, so dropped empty values never produce a phantom edit.
-            diff = _changed(fv(found[0]), pm_payload)
-            if diff:
-                client.edit_submission(cfg.app_project_master, sid, diff)
-                summ.add("updated", f"Project Master {pc}", f"{sid}: {', '.join(sorted(diff))}")
-            else:
-                summ.add("skipped", f"Project Master {pc}", f"{sid} unchanged")
+            # Compared in payload form, so values the fixture leaves empty are never reported.
+            kept = list(_changed(fv(found[0]), pm_payload))
+            summ.add("skipped", f"Project Master {pc}",
+                     f"{sid} unchanged" if not kept else f"{sid} exists; Clappia values kept, nothing sent")
+            for f in kept:
+                summ.add("kept", f)
     except ClappiaError as ex:
         summ.add("error", f"Project Master {pc}", str(ex))
         print("Aborting: Project Master step failed.", file=out)

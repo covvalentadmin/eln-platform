@@ -22,13 +22,23 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from stagegate.clappia import DEFAULT_DOTENV, ClappiaClient, ClappiaError, Config, fv, norm_value
-from stagegate.engine import build_checklist, load_library
+from stagegate.engine import SettingsError, build_checklist, load_library
 from stagegate.inject import (EXIT_ERRORS, EXIT_OK, EXIT_REFUSED, GATE, _changed, clappia_project_fields,
                               gate_decision_record, guard_enabled, guard_project, load_config, to_payload)
 from stagegate.pilot import planned_violations, record_violations, refuse
 from stagegate.readiness import evaluate
 
 AWAITING = "Ready - awaiting Pass + ownership"
+# Every field status may write to the Projects record. Must be a subset of settings system_fields.
+PROJECT_FIELDS_WRITTEN = ("traffic_light", "open_critical", "open_standard", "unacked_notes", "last_engine_run")
+
+
+def check_system_fields(fields, settings: dict) -> None:
+    """Raise unless every Projects field status would write is in settings.yaml system_fields."""
+    outside = sorted(set(fields) - set(settings.get("system_fields") or ()))
+    if outside:
+        raise SettingsError(f"status would write Projects field(s) {outside} that are not in "
+                            "settings.yaml system_fields")
 
 
 def final_light(ev: dict, decision: dict) -> tuple:
@@ -81,6 +91,7 @@ def run_status(fixture: Optional[str] = None, project: Optional[str] = None, dry
         return EXIT_REFUSED
 
     lib = load_library()
+    check_system_fields(PROJECT_FIELDS_WRITTEN, lib.settings)  # before any API call
     sel = lib.settings.get("select_fields") or {}
     sel_pm, sel_gd = sel.get("project_master"), sel.get("gate_decision")
 
@@ -161,6 +172,8 @@ def run_status(fixture: Optional[str] = None, project: Optional[str] = None, dry
         diff = _changed(fv(rec), wanted)
         if diff:
             diff[stamp_field] = ts
+            if app == cfg.app_project_master:
+                check_system_fields(diff, lib.settings)  # never anything people typed
             try:
                 client.edit_submission(app, sid, diff)
             except ClappiaError as ex:
