@@ -1,0 +1,133 @@
+# G2 core checklist — Stage 0 (charter) and Stage 1 (lab + sample), as approved by R&D.
+# item = Check text, criterion = Evidence text. Schema: see g1_core.yaml.
+# Loaded and validated, but NOT injected until G2 is listed in settings.yaml active_core_gates (V2-11).
+version: 1
+gate: G2
+items:
+  # --- Stage 0: charter ---
+  - id: C0-1
+    item: "Charter approved: scope, stages, out-of-scope, success criteria"
+    criterion: "Signed charter"
+    class: Critical
+    hard_stop: false
+    owner_role: Project Lead
+    approver_role: Sponsor
+    checkpoint: pre_experiment
+  - id: C0-2
+    item: "Customer specification final; test methods requested. Reminder: methods must be received, or an equivalent agreed in writing, before the sample CoA (L-8)"
+    criterion: "Spec sheet + method list"
+    class: Note
+    hard_stop: false
+    owner_role: Analytical lead
+    approver_role: Chemist
+    checkpoint: pre_experiment
+  - id: C0-3
+    item: "Roles named: R&D, Analytical, Process/scale-up, Procurement, Pilot coordination"
+    criterion: "Roles table"
+    class: Standard
+    hard_stop: false
+    owner_role: Project Lead
+    checkpoint: pre_experiment
+  - id: C0-4
+    item: "Key raw materials sourced for lab scale; pilot quantity lead time known"
+    criterion: "Quotes / PO"
+    class: Standard
+    hard_stop: false
+    owner_role: Procurement
+    checkpoint: pre_experiment
+  - id: C0-5
+    item: "Assumptions register opened (yield, consumption norms, impurities, RMC target)"
+    criterion: "Register"
+    class: Standard
+    hard_stop: false
+    owner_role: Project Lead
+    checkpoint: pre_experiment
+  - id: C0-6
+    item: "Regulatory position recorded (GMP or not, controlled substances, target-market registrations)"
+    criterion: "Note in charter"
+    class: Standard
+    hard_stop: false
+    owner_role: Project Lead
+    checkpoint: pre_experiment
+  - id: C0-7
+    item: "Needs beyond routine lab capability flagged (equipment, columns, reference/impurity standards, method development)"
+    criterion: "List to Project Lead"
+    class: Standard
+    hard_stop: false
+    owner_role: R&D lead
+    checkpoint: pre_experiment
+  # --- Stage 1: lab + sample ---
+  - id: L-1
+    item: "PHA Level 1 done and approved before the first experiment"
+    criterion: "PHA L1 sheet + executive summary"
+    class: Critical
+    hard_stop: false
+    owner_role: Chemist
+    approver_role: R&D lead
+    checkpoint: pre_experiment
+  - id: L-2
+    item: "Feasibility runs kept within PHA limits (≤ 100 mL RBF, ≤ 400 mL pressure reactor)"
+    criterion: "ELN entries"
+    class: Standard
+    hard_stop: false
+    owner_role: Chemist
+    checkpoint: gate
+  - id: L-3
+    item: "Every route or reagent change re-checked through PHA L1 before running it; Project Lead informed (decides whether the customer is told)"
+    criterion: "Change log + updated PHA L1"
+    class: Critical
+    hard_stop: false
+    owner_role: Chemist
+    approver_role: Project Lead
+    checkpoint: gate
+  - id: L-4
+    item: "Critical process parameters identified"
+    criterion: "Process description"
+    class: Standard
+    hard_stop: false
+    owner_role: R&D lead
+    checkpoint: gate
+  - id: L-5
+    item: "Yield and consumption norms measured against the assumptions register"
+    criterion: "Data summary"
+    class: Standard
+    hard_stop: false
+    owner_role: R&D lead
+    checkpoint: gate
+  - id: L-6
+    item: "Preliminary impurity profile"
+    criterion: "Analytical summary"
+    class: Standard
+    hard_stop: false
+    owner_role: Analytical lead
+    checkpoint: gate
+  - id: L-7
+    item: "Preliminary RMC against target (a gap is raised at Gate 1, not hidden)"
+    criterion: "Cost sheet (RMC app)"
+    class: Standard
+    hard_stop: false
+    owner_role: Costing
+    checkpoint: gate
+  - id: L-8
+    item: "Methods received or equivalent agreed (hard stop); sample meets every specification test; CoA issued"
+    criterion: "CoA"
+    class: Critical
+    hard_stop: true
+    owner_role: Analytical lead
+    approver_role: R&D lead
+    checkpoint: pre_coa
+  - id: L-9
+    item: "Sample dispatched with SDS, CoA and preliminary technical note"
+    criterion: "Dispatch record"
+    class: Standard
+    hard_stop: false
+    owner_role: Project Lead
+    checkpoint: gate
+  - id: GATE-1
+    item: "Customer approves and qualifies the sample; Sponsor approves the pilot"
+    criterion: "Customer approval on record"
+    class: Critical
+    hard_stop: false
+    owner_role: Project Lead
+    approver_role: Sponsor
+    checkpoint: gate

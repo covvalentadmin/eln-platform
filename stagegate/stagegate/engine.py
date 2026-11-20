@@ -42,11 +42,12 @@ class TemplateError(ValueError):
 # ---------------------------------------------------------------- library
 @dataclass(frozen=True)
 class Library:
-    core: list
+    core: list  # core items of the ACTIVE gates only (settings active_core_gates): what build_checklist uses
     rules: dict
     learning_to_rule: dict
     deferred: dict
     settings: dict
+    cores: dict = field(default_factory=dict)  # every loaded core template: gate -> items (active or not)
 
 
 def load_core_template(path: Path, settings: dict) -> list:
@@ -118,15 +119,34 @@ def load_library(data_dir: Path = DATA_DIR) -> Library:
             return yaml.safe_load(fh)
 
     settings = y("settings.yaml")
-    core = load_core_template(data_dir / "g1_core.yaml", settings)
+    cores = load_core_templates(data_dir, settings)
+    active = settings.get("active_core_gates", ["G1"])
+    unknown = [g for g in active if g not in cores]
+    if unknown:
+        raise TemplateError(f"settings.yaml: key 'active_core_gates': no core template for {unknown}; "
+                            f"loaded {sorted(cores)}")
+    core = [c for g in active for c in cores[g]]
     rules = {r["id"]: r for r in y("flag_rules_g1.yaml")["rules"]}
     l2r = {lid: r["id"] for r in rules.values() for lid in r.get("learning_ids", [])}
     deferred = y("learning_map_deferred.yaml")["deferred"]
     overlap = set(l2r) & set(deferred)
     if overlap:
         raise ValueError(f"learning IDs mapped twice: {sorted(overlap)}")
-    return Library(core, rules, l2r, deferred, settings)
+    return Library(core, rules, l2r, deferred, settings, cores)
 
+
+def load_core_templates(data_dir: Path, settings: dict) -> dict:
+    """Every data/*_core.yaml, validated, keyed by the gate in its header (one file per gate)."""
+    cores, files = {}, {}
+    for path in sorted(Path(data_dir).glob("*_core.yaml")):
+        items = load_core_template(path, settings)
+        if not items:
+            raise TemplateError(f"{path.name}: key 'items': no items")
+        gate = items[0]["gate"]
+        if gate in cores:
+            raise TemplateError(f"{path.name}: key 'gate': {gate} already defined in {files[gate]}")
+        cores[gate], files[gate] = items, path.name
+    return cores
 
 
 # ---------------------------------------------------------------- model

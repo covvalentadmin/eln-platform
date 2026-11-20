@@ -9,16 +9,26 @@ role_fields:
   Founder: founder_approver_email
   Founders: founder_approver_email
   CSIO: csio_approver_email
+  R&D lead: rd_lead_email
 role_fallbacks:
   PM: bd_poc_email
   Analytical lead: rd_lead_email
   Costing owner: bd_poc_email
   Regulatory head: founder_approver_email
+  # G2 placeholders (fallback): no Project Master field yet; V2-03 replaces these.
+  Sponsor: founder_approver_email       # (fallback)
+  Project Lead: bd_poc_email            # (fallback)
+  Procurement: bd_poc_email             # (fallback)
+  Chemist: rd_lead_email                # (fallback)
+  Costing: bd_poc_email                 # (fallback)
 # Receiving POC per gate: acknowledges Notes and e-signs ownership.
 receiving_poc_field:
   G1: rd_lead_email
 # Open decision #3: founder sign-off at G1 as Standard tick (spec default) or Critical approval.
 g1_11_class: Standard
+# Core templates (data/*_core.yaml) that inject and status use. Others are loaded and validated only.
+# G2 is added in V2-11; until then existing projects get no G2 core records.
+active_core_gates: [G1]
 # Clappia Select/Dropdown fields per app. The API wants these as a list of strings on write
 # ("G1" -> ["G1"]) and returns them as lists on read. Everything else (e.g. target_market) is plain text.
 select_fields:
